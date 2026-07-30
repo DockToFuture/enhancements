@@ -1,0 +1,13 @@
+title: "Diki Extension"
+gep-number: 0063
+authors:
+- "@AleksandarSavchev"
+steering-link: https://gardener.cloud/community/steering/0063-diki-extension/
+status: provisional
+creation-date: 2026-05-12
+reviewers:
+- "@vpnachev"
+- "@ScheererJ"
+- "@rfranzke"
+- "@timebertt"
+approvers:
