@@ -516,9 +516,11 @@ sequenceDiagram
 **Concretely responsible components:**
 
 1. **Admission — `gardener-apiserver`**
-   * `Shoot.spec.extensions[].version` must exist in the referenced
-     extension's `componentVersions` catalog; setting a `version` for a type
-     with no catalog is rejected.
+   * `Shoot.spec.extensions[].version` must exist in the `componentVersions`
+     catalog on the operator `Extension` of the **same `type`** as the entry
+     (the entry's `type` is the reference — there is no separate profile
+     pointer). If no `Extension` of that type publishes a catalog, setting a
+     `version` is rejected.
    * The selected version must be classified `supported` or `deprecated`, or
      `preview` **when the shoot opts into preview** (via
      `autoUpdate.classifications` in a future iteration, or an explicit
