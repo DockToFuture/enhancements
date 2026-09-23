@@ -1,27 +1,27 @@
 %%{init: {'theme': 'default', 'themeVariables': {'background': '#ffffff'}}}%%
 stateDiagram-v2
-  [*] --> unavailable: profile entry created<br/>with future startTime
-  [*] --> preview: profile entry created<br/>(no startTime, default)
-  unavailable --> preview: startTime reached
-  preview --> supported: startTime reached
-  supported --> deprecated: startTime reached
-  deprecated --> expired: startTime reached
-  expired --> [*]: removed from profile
+  [*] --> unavailable: entry created<br/>with future startTime
+  [*] --> preview: entry created<br/>(no startTime, default)
+  unavailable --> preview: preview startTime reached
+  preview --> supported: supported startTime reached
+  supported --> deprecated: deprecated startTime reached
+  deprecated --> expired: expired startTime reached
+  expired --> [*]: removed from the catalog
 
   note right of preview
-    Selectable with
-    explicit opt-in
+    Selectable only when the
+    shoot opts into preview
   end note
   note right of supported
-    Default target for
-    fresh shoots &
-    auto-upgrade
+    Default target for fresh
+    shoots &amp; auto-upgrade
   end note
   note right of deprecated
-    Still selectable;
-    upgrade nudged
+    Still selectable; auto-upgrade
+    moves off it when a newer
+    supported version exists
   end note
   note right of expired
-    Force-upgrade path
-    fires
+    Force-upgrade path fires
+    (GEP-0005 semantics)
   end note

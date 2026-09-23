@@ -2,21 +2,20 @@
 flowchart TB
   %% ── Row 1: Actors ─────────────────────────────────────────
   OP["Landscape<br/>operator"]
-  OWN["Shoot<br/>owner"]
+  OWN["Cluster<br/>owner"]
 
   %% ── Row 2: Garden cluster (API objects, then controllers) ─
   subgraph Garden["Garden cluster"]
     direction TB
     subgraph GardenAPIs["API objects"]
       direction LR
-      PROF["ExtensionProfile<br/>(component versions +<br/>lifecycle)"]
-      CR["ControllerRegistration /<br/>Extension"]
-      SH["Shoot<br/>spec.extensions[].version<br/>versionUpdatePolicy"]
+      EXTOP["operator.gardener.cloud<br/>Extension<br/>(version catalog + lifecycle)"]
+      SH["Shoot<br/>spec.extensions[].version<br/>spec.extensions[].autoUpdate"]
     end
     subgraph GardenCtrl["Control-plane components"]
       direction LR
       GAPI["gardener-apiserver<br/>(admission)"]
-      GCM["gardener-controller-manager<br/>(classify + auto-upgrade)"]
+      GCM["gardener-controller-manager<br/>(classify + resolve + auto-upgrade)"]
     end
     GardenAPIs ~~~ GardenCtrl
   end
@@ -25,32 +24,33 @@ flowchart TB
   subgraph Seed["Seed cluster"]
     direction LR
     GL["gardenlet"]
+    EXTSEED["extensions.gardener.cloud<br/>Extension<br/>(resolved version in<br/>spec.providerConfig)"]
     EXT["Extension<br/>controller"]
   end
 
-  %% ── Row 4: Shoot ──────────────────────────────────────────
-  subgraph ShootCluster["Shoot cluster (control plane)"]
+  %% ── Row 4: Managed component ──────────────────────────────
+  subgraph ShootCluster["Shoot cluster"]
     PAY["Managed component<br/>(Traefik / Envoy GW /<br/>Falco / Diki)"]
   end
 
   %% Actor → specific API object (not the whole garden box)
-  OP  -- maintains --> PROF
-  OP  -- deploys   --> CR
-  OWN -- pins      --> SH
+  OP  -- maintains catalog on --> EXTOP
+  OWN -- sets version in       --> SH
 
   %% Admission & classification (arrows flow controllers → APIs
   %% so the layout engine ranks API objects above controllers)
-  GAPI -- validates          --> SH
-  GAPI -- reads              --> PROF
-  GCM  -- classifies         --> PROF
-  GCM  -- auto-upgrades      --> SH
+  GAPI -- validates against catalog --> SH
+  GAPI -- reads                      --> EXTOP
+  GCM  -- classifies                 --> EXTOP
+  GCM  -- auto-upgrades              --> SH
 
   %% Garden → seed → shoot deployment path
-  SH   -- resolved by    --> GL
-  PROF -- resolved entry --> GL
-  GL   -- reconciles     --> EXT
-  EXT  -- deploys        --> PAY
+  SH   -- reconciled by                 --> GL
+  GCM  -- writes resolved version into  --> EXTSEED
+  GL   -- reconciles                    --> EXT
+  EXT  -- reads resolved version from   --> EXTSEED
+  EXT  -- deploys                       --> PAY
 
-  %% Highlight the new resource this GEP introduces
+  %% Highlight where the catalog lives
   classDef newResource fill:#fff4c2,stroke:#d4a017,stroke-width:2px;
-  class PROF newResource;
+  class EXTOP newResource;
