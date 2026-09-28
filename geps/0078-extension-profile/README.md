@@ -546,7 +546,9 @@ sequenceDiagram
      version exists within the strategy's boundary (`patch` → same minor,
      `minor` → same major, `major` → any); if so, patch
      `spec.extensions[].version` during the next maintenance window and emit a
-     `Shoot` event.
+     `Shoot` event. This runs in the shoot maintenance controller alongside the
+     existing Kubernetes/machine-image maintenance logic, and the applied change
+     is recorded in `Shoot.status.lastMaintenance` just like those upgrades.
    * On `expired`, apply the force-upgrade path (below).
    * **Resolve** the effective `(name, version)` and its `providerConfig`, and
      write them into the seed-side `Extension` resource's `spec.providerConfig`
@@ -560,7 +562,8 @@ sequenceDiagram
      **highest supported patch of the next available minor**, exactly as
      [GEP-5] specifies for Kubernetes versions. It never targets an
      unsupported version. This is the special case of the auto-upgrade loop
-     that also applies to shoots with `updateStrategy: none`.
+     that also applies to shoots with `updateStrategy: none`, and is likewise
+     recorded in `Shoot.status.lastMaintenance`.
 
 4. **Deployment — `gardenlet` and extension controller**
    * `gardener-controller-manager` has already written the resolved version
