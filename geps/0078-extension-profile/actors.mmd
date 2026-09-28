@@ -9,7 +9,7 @@ flowchart TB
     direction TB
     subgraph GardenAPIs["API objects"]
       direction LR
-      EXTOP["operator.gardener.cloud<br/>Extension<br/>(version catalog + lifecycle)"]
+      PROF["core.gardener.cloud<br/>ExtensionProfile<br/>(version list + lifecycle)"]
       SH["Shoot<br/>spec.extensions[].version<br/>spec.extensions[].autoUpdate"]
     end
     subgraph GardenCtrl["Control-plane components"]
@@ -34,14 +34,14 @@ flowchart TB
   end
 
   %% Actor → specific API object (not the whole garden box)
-  OP  -- maintains catalog on --> EXTOP
+  OP  -- maintains          --> PROF
   OWN -- sets version in       --> SH
 
   %% Admission & classification (arrows flow controllers → APIs
   %% so the layout engine ranks API objects above controllers)
-  GAPI -- validates against catalog --> SH
-  GAPI -- reads                      --> EXTOP
-  GCM  -- classifies                 --> EXTOP
+  GAPI -- validates against profile --> SH
+  GAPI -- reads                      --> PROF
+  GCM  -- classifies                 --> PROF
   GCM  -- auto-upgrades              --> SH
 
   %% Garden → seed → shoot deployment path
@@ -51,6 +51,6 @@ flowchart TB
   EXT  -- reads resolved version from   --> EXTSEED
   EXT  -- deploys                       --> PAY
 
-  %% Highlight where the catalog lives
+  %% Highlight where the version list lives
   classDef newResource fill:#fff4c2,stroke:#d4a017,stroke-width:2px;
-  class EXTOP newResource;
+  class PROF newResource;
