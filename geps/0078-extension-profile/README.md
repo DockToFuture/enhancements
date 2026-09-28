@@ -5,8 +5,8 @@
 This GEP proposes a **homogeneous version profile for extension-managed
 components**, reusing the version-lifecycle model Gardener already applies to
 Kubernetes and machine-image versions in `CloudProfile` (the classification
-lifecycle formalised in [GEP-0032], the force-upgrade semantics in
-[GEP-0005]). The unit of versioning is the *component* the extension installs
+lifecycle formalised in [GEP-32], the force-upgrade semantics in
+[GEP-5]). The unit of versioning is the *component* the extension installs
 — **not** the extension controller binary, whose version is an operator
 concern and is not visible to shoot owners.
 
@@ -26,11 +26,11 @@ force-upgrade, and **resolves the effective version into the seed-side
 controller simply reads it from `spec.providerConfig`. No new shared library is
 required, and extensions never need garden-cluster access.
 
-[GEP-0005]: ../0005-versioning-policy/README.md
-[GEP-0032]: ../0032-version-classification-lifecycle/README.md
-[GEP-0057]: ../0057-replace-nginx-ingress-shoot-addon-with-traefik-extension/README.md
-[GEP-0063]: ../0063-diki-extension/README.md
-[GEP-0068]: ../0068-gateway-api-extension/README.md
+[GEP-5]: ../0005-versioning-policy/README.md
+[GEP-32]: ../0032-version-classification-lifecycle/README.md
+[GEP-57]: ../0057-replace-nginx-ingress-shoot-addon-with-traefik-extension/README.md
+[GEP-63]: ../0063-diki-extension/README.md
+[GEP-68]: ../0068-gateway-api-extension/README.md
 [gardener-extension-falco]: https://github.com/gardener/gardener-extension-shoot-falco-service
 
 ## Motivation
@@ -55,12 +55,12 @@ version-management surface:
   type `shoot-falco-service`) ships a bespoke `FalcoProfile` CRD with its own
   classification scheme. It has, in effect, already solved this problem for
   itself.
-* The **Traefik extension** ([GEP-0057], type `shoot-traefik`) pins one
+* The **Traefik extension** ([GEP-57], type `shoot-traefik`) pins one
   component version per extension release.
-* The **Diki extension** ([GEP-0063], type `diki`) surfaces a `dikiVersion`
+* The **Diki extension** ([GEP-63], type `diki`) surfaces a `dikiVersion`
   plus a list of rulesets with their own versions inside the `ComplianceScan`
   CRD.
-* The **Envoy Gateway extension** ([GEP-0068], type `envoy-gateway`) lands with
+* The **Envoy Gateway extension** ([GEP-68], type `envoy-gateway`) lands with
   its own version matrix.
 
 The concern is not that any one of these approaches is wrong — Falco's
@@ -78,10 +78,10 @@ machine-image versions in `CloudProfile`. This GEP reuses that proven model for
 the subset of extensions where user-facing component versioning is part of the
 product.
 
-**Relationship to `CloudProfile`, [GEP-0032] and [GEP-0005].** The lifecycle
+**Relationship to `CloudProfile`, [GEP-32] and [GEP-5].** The lifecycle
 vocabulary and classification semantics this GEP builds on are those
 *implemented today* in `CloudProfile` for Kubernetes and machine-image
-versions. [GEP-0032] formalises the classification lifecycle; [GEP-0005]
+versions. [GEP-32] formalises the classification lifecycle; [GEP-5]
 defines the versioning policy, including the force-upgrade behaviour on expiry.
 Where the two diverge from the existing implementation, the existing
 implementation is the reference for this GEP.
@@ -98,12 +98,12 @@ implementation is the reference for this GEP.
    entry is a named component version, so a single extension type can offer
    several independently-versioned components.
 4. Reuse the lifecycle classifications and status-computation semantics that
-   `CloudProfile` implements today ([GEP-0032]) — verbatim, with no parallel
+   `CloudProfile` implements today ([GEP-32]) — verbatim, with no parallel
    vocabulary.
 5. Give cluster owners an explicit **pin** surface plus a documented
    **auto-upgrade** opt-in, and preserve **force-upgrade** on expiry —
    targeting the *highest* supported patch of the next available minor, exactly
-   as [GEP-0005] specifies for Kubernetes versions.
+   as [GEP-5] specifies for Kubernetes versions.
 6. Resolve the pinned version to the extension through the **existing seed
    `Extension` contract**, so extensions read the resolved version from
    `spec.providerConfig` and need no new library or garden-cluster access.
@@ -117,7 +117,7 @@ implementation is the reference for this GEP.
    [rejected in principle](#per-extension-bespoke-profile-the-falcoprofile-pattern)
    as the idiomatic approach (third-party extensions in the wild cannot be
    strictly enforced, but this is the recommended path).
-2. Redefining the lifecycle vocabulary that `CloudProfile` / [GEP-0032]
+2. Redefining the lifecycle vocabulary that `CloudProfile` / [GEP-32]
    establish.
 3. Prescribing which component versions any specific extension must ship. This
    GEP defines the *mechanism*; the concrete profile content is authored by the
@@ -191,7 +191,7 @@ spec:
         kubernetes:
           minimum: "1.28"
           maximum: "1.32"
-      # Identical shape to CloudProfile version lifecycles ([GEP-0032]).
+      # Identical shape to CloudProfile version lifecycles ([GEP-32]).
       lifecycle:
         - classification: preview
         - classification: supported
@@ -253,7 +253,7 @@ example Traefik) simply omits it, and the entry stays a pure `version` +
 A typical use is declaring the sub-component versions a top-level version
 supports. Some managed components carry sub-components with their own versions
 — Diki is the clearest example, pairing a `dikiVersion` with a list of
-independently-versioned `rulesets` ([GEP-0063]). This GEP versions the
+independently-versioned `rulesets` ([GEP-63]). This GEP versions the
 top-level component; finer-grained sub-component versions stay inside the
 extension's own CRDs (`ComplianceScan.spec.rulesets[]` in Diki's case), and the
 per-version `providerConfig` declares which sub-component versions the entry is
@@ -365,7 +365,7 @@ minor. An operator that wants a different posture sets it on the profile.
   versioned releases. A component that is not meaningfully versioned does not
   need a profile.
 * **Version-string format.** Semver is preferred because it is what the
-  [GEP-0032] classifier expects. Components publishing non-semver versions MUST
+  [GEP-32] classifier expects. Components publishing non-semver versions MUST
   be wrapped in a semver-compatible facade in the profile, exactly as
   GardenLinux already does for OS versions — for example Diki's `v0.24` becomes
   `0.24.0`, and a calendar tag like `2026.03` becomes `2026.3.0`. A total order
@@ -388,7 +388,7 @@ minor. An operator that wants a different posture sets it on the profile.
 
 ### The version-lifecycle state machine
 
-Identical to [GEP-0032], reproduced here for reference:
+Identical to [GEP-32], reproduced here for reference:
 
 ```mermaid
 stateDiagram-v2
@@ -415,7 +415,7 @@ stateDiagram-v2
   end note
   note right of expired
     Force-upgrade path fires
-    (GEP-0005 semantics)
+    (GEP-5 semantics)
   end note
 ```
 
@@ -504,7 +504,7 @@ sequenceDiagram
       GCM->>API: patch Shoot.spec.extensions[].version
     end
     alt current version expired
-      GCM->>API: force-upgrade to highest supported patch<br/>of the next available minor (GEP-0005)
+      GCM->>API: force-upgrade to highest supported patch<br/>of the next available minor (GEP-5)
     end
   end
 
@@ -541,7 +541,7 @@ sequenceDiagram
 
 2. **Classification, auto-upgrade and resolution — `gardener-controller-manager`**
    * Compute the profile `status` classification from `lifecycle` and current
-     time — reusing the [GEP-0032] implementation.
+     time — reusing the [GEP-32] implementation.
    * For each shoot with auto-update enabled, evaluate whether a newer permitted
      version exists within the strategy's boundary (`patch` → same minor,
      `minor` → same major, `major` → any); if so, patch
@@ -558,7 +558,7 @@ sequenceDiagram
      controller-manager patches `spec.extensions[].version` to the **highest
      supported patch of the current minor**, or — if none remains — to the
      **highest supported patch of the next available minor**, exactly as
-     [GEP-0005] specifies for Kubernetes versions. It never targets an
+     [GEP-5] specifies for Kubernetes versions. It never targets an
      unsupported version. This is the special case of the auto-upgrade loop
      that also applies to shoots with `updateStrategy: none`.
 
@@ -585,7 +585,7 @@ classifies the Diki `ExtensionProfile` and resolves the effective `diki`
 version into the seed-side `Extension` resource, exactly as for every other
 extension. The Diki
 extension — whose operator runs in the shoot's namespace on the seed
-([GEP-0063]) — reads the resolved version from `spec.providerConfig` and
+([GEP-63]) — reads the resolved version from `spec.providerConfig` and
 **replicates it into the `ComplianceScan` objects** it manages
 (`spec.dikiVersion`), and validates the ruleset selection against the entry's
 `supportedRulesetVersions`. Diki does not need to re-implement Gardener's
@@ -628,7 +628,7 @@ across releases. To keep partially-merged pieces from shipping enabled in
 intermediate releases, the whole surface is guarded by a feature gate
 (`ExtensionComponentVersions`), disabled by default until the classify /
 auto-upgrade / resolve loops and admission are all present, mirroring the
-incremental-rollout approach in [GEP-0057] and [GEP-0068]. Promotion out of the
+incremental-rollout approach in [GEP-57] and [GEP-68]. Promotion out of the
 feature gate is tracked as a Future Enhancement.
 
 ## Drawbacks

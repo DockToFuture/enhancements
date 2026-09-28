@@ -26,7 +26,7 @@ sequenceDiagram
       GCM->>API: patch Shoot.spec.extensions[].version
     end
     alt current version expired
-      GCM->>API: force-upgrade to highest supported patch<br/>of the next available minor (GEP-0005)
+      GCM->>API: force-upgrade to highest supported patch<br/>of the next available minor (GEP-5)
     end
   end
 
