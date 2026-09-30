@@ -518,6 +518,91 @@ sequenceDiagram
   EXT->>EXT: deploy the managed component<br/>at the resolved version
 ```
 
+The profile `status` deserves a closer look, because it is the one field that
+is *computed* rather than authored, and it has a single writer and several
+readers. `gardener-controller-manager` writes it (the classify loop); nobody
+else does. Everything that decides whether a version is *usable* — admission
+selectability, the auto-upgrade target search, the dashboard's list of offered
+versions — reads it. The seed-side extension controller reads none of it: it
+only ever sees a resolved concrete version in the seed `Extension`
+`providerConfig`, and never the profile at all.
+
+```mermaid
+%%{init: {'theme': 'default', 'themeVariables': {'background': '#ffffff'}}}%%
+flowchart TB
+  %% ── Actors ────────────────────────────────────────────────
+  OP["Landscape operator"]
+  OWN["Cluster owner"]
+
+  %% ── Garden cluster: the ExtensionProfile, split spec/status ─
+  subgraph Garden["Garden cluster"]
+    direction TB
+    subgraph PROF["ExtensionProfile (core.gardener.cloud) — name == extension type"]
+      direction TB
+      SPEC["spec<br/>defaultUpdateStrategy · supportedUpdateStrategies<br/>versions[]: name·version·compatibility·lifecycle·providerConfig"]
+      STAT["status.versions[]<br/>name · version · classification<br/>(preview / supported / deprecated / expired / unavailable)"]
+    end
+    SH["Shoot<br/>spec.extensions[].version<br/>spec.extensions[].autoUpdate {enabled, updateStrategy}<br/>status.lastMaintenance"]
+    GAPI["gardener-apiserver<br/>(admission)"]
+    subgraph GCM["gardener-controller-manager"]
+      direction TB
+      L1["Loop A — classify<br/>lifecycle + now ⇒ status.classification (GEP-32)"]
+      L2["Loop B — auto-upgrade / force-upgrade<br/>(maintenance window)"]
+      L3["Loop C — resolve<br/>(name,version)+providerConfig ⇒ seed Extension"]
+    end
+  end
+
+  %% ── Seed cluster ──────────────────────────────────────────
+  subgraph Seed["Seed cluster"]
+    direction TB
+    EXTSEED["Extension (extensions.gardener.cloud)<br/>spec.providerConfig = resolved version"]
+    GL["gardenlet"]
+    EXT["Extension controller<br/>(never reads the profile)"]
+  end
+
+  %% ── Shoot cluster ─────────────────────────────────────────
+  subgraph ShootCluster["Shoot cluster"]
+    PAY["Managed component<br/>Traefik / Envoy GW / Falco / Diki"]
+  end
+
+  %% Actors → what they author
+  OP  -- "maintains spec" --> SPEC
+  OWN -- "pins version / sets autoUpdate" --> SH
+
+  %% The single WRITER of status
+  L1 == "WRITES status" ==> STAT
+
+  %% The READERS of status
+  GAPI -. "READS status: selectable? accept/reject" .-> STAT
+  L2   -. "READS status: upgrade target · expiry" .-> STAT
+  OWN  -. "READS status (via dashboard): offered versions" .-> STAT
+
+  %% Admission & auto-upgrade acting on the Shoot
+  GAPI -- "validates spec.version vs profile + K8s compat" --> SH
+  GAPI -- "resolves partial version, persists" --> SH
+  L2   -- "patches version, records lastMaintenance" --> SH
+
+  %% Garden → seed → shoot deployment path
+  L3 -- "writes resolved version" --> EXTSEED
+  GL -- "reconciles" --> EXTSEED
+  GL -- "reconciles" --> EXT
+  EXT -- "reads resolved version" --> EXTSEED
+  EXT -- "deploys at resolved version" --> PAY
+
+  %% Highlight the new resource, the computed status, and the writer
+  classDef newResource fill:#fff4c2,stroke:#d4a017,stroke-width:2px;
+  classDef statusBox fill:#d6ebff,stroke:#1f6feb,stroke-width:2px;
+  classDef writeNode fill:#e7f9e7,stroke:#1a7f37,stroke-width:2px;
+  class PROF,SPEC newResource;
+  class STAT statusBox;
+  class L1 writeNode;
+```
+
+The solid arrow into `status` is the single writer (the classify loop); the
+dotted arrows are its readers. Everything upstream of resolution keys off the
+computed classification, while everything at or downstream of resolution sees
+only a concrete pinned version.
+
 **Concretely responsible components:**
 
 1. **Admission — `gardener-apiserver`**
