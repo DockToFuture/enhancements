@@ -58,8 +58,12 @@ version-management surface:
 * The **Traefik extension** ([GEP-57], type `shoot-traefik`) pins one
   component version per extension release.
 * The **Diki extension** ([GEP-63], type `diki`) surfaces a `dikiVersion`
-  (the binary) plus a list of independently-versioned rulesets, each with its
-  own `id` and `version`, inside the `ComplianceScan` CRD.
+  (the scanner) plus a list of independently-versioned rulesets, each with its
+  own `id` and `version`, inside the `ComplianceScan` CRD. Unlike the extensions
+  above, the available Diki versions are determined by the `diki-operator` and
+  the `diki-extension` release rather than by an operator-curated list, so for
+  Diki the `ExtensionProfile` is **read-only** (see
+  [Diki](#diki--a-read-only-version-profile)).
 * The **Envoy Gateway extension** ([GEP-68], type `envoy-gateway`) lands with
   its own version matrix.
 
@@ -285,11 +289,12 @@ versions:
 
 Another use is **advertising** the independently-versioned sub-components a
 top-level version supports, as a read-only reference for users. Diki is the
-canonical example ([GEP-63]): a `diki` version entry can carry the ruleset
-`id`/`version` pairs that version supports, which a user reads and copies into
-their `ComplianceScan`. Note the boundary this keeps: the profile only
-*advertises* these; it neither pins nor validates them. The authoritative
-selection still lives in the extension's own CRDs
+canonical example ([GEP-63]): a `diki` version entry carries, in its
+`providerConfig`, the scanner versions and their ruleset `id`/`versions[]` that
+the release supports, which a user reads and copies into their `ComplianceScan`.
+Note the boundary this keeps: the profile only *advertises* these; it neither
+pins nor validates them, and no component decodes the `providerConfig`. The
+authoritative selection still lives in the extension's own CRDs
 (`ComplianceScan.spec.rulesets[]` in Diki's case). This GEP versions and
 lifecycles the top-level component only; sub-component versions ride along in
 `providerConfig` as opaque, non-enforced metadata. See
@@ -385,9 +390,9 @@ minor. An operator that wants a different posture sets it on the profile.
 * **Version-string format.** Semver is preferred because it is what the
   [GEP-32] classifier expects. Components publishing non-semver versions MUST
   be wrapped in a semver-compatible facade in the profile, exactly as
-  GardenLinux already does for OS versions — for example Diki's `v0.24` becomes
-  `0.24.0`, and a calendar tag like `2026.03` becomes `2026.3.0`. A total order
-  is a hard requirement of the auto-upgrade logic; nothing works without one.
+  GardenLinux already does for OS versions — for example a calendar tag like
+  `2026.03` becomes `2026.3.0`. A total order is a hard requirement of the
+  auto-upgrade logic; nothing works without one.
 * As with Kubernetes and machine-image versions, listing a version whose image
   the operator has not yet published in the image vector produces an
   unpullable component — the operator's responsibility to keep profile and
@@ -658,9 +663,9 @@ only a concrete pinned version.
    * On `expired`, apply the force-upgrade path (below).
    * **Resolve** the effective `(name, version)` and its `providerConfig`, and
      write them into the seed-side `Extension` resource's `spec.providerConfig`
-     (see component 4). This single mechanism serves every extension that opts
-     into Shoot-level pinning, so those extensions do not re-implement update
-     strategies. Skipped for read-only profiles (`spec.readOnly: true`): a
+     (see component 4). This single mechanism serves every full-participant
+     extension, so those extensions do not re-implement update strategies.
+     Skipped for read-only profiles (`spec.readOnly: true`): a
      read-only profile is neither classified nor resolved — it is inert data the
      controller leaves untouched (see
      [Diki](#diki--a-read-only-version-profile)).
@@ -694,10 +699,18 @@ no garden-cluster access from extensions).
 ### Diki — a read-only version profile
 
 Diki uses the `ExtensionProfile` differently from an extension like Traefik, and
-it is worth being explicit about the boundary. For Diki the profile is a
-**read-only reference**: the operator authors, in `spec`, which `diki` versions
-exist and — per version — which rulesets (`id` + `version`) that version
-supports. The Diki user reads this to know what to put in their scan.
+it is worth being explicit about the boundary. For Diki the profile is
+**read-only**: it advertises which `diki` scanner versions the
+`diki-extension` release supports and — per scanner version — which rulesets
+(`id` + `versions[]`) are available. The Diki user reads this to know what to put
+in their scan.
+
+Unlike the extensions above, the available Diki versions are not a list an
+operator curates for rollout — they are determined by the `diki-operator` and
+the `diki-extension` release. The `providerConfig` here is therefore
+read-only reference data: it is **not decoded by any component**; nothing
+resolves it into a seed `Extension` and nothing acts on it. It exists so the
+user can read the supported combinations from one place.
 
 What Diki does **not** do in this iteration is drive deployment from the
 profile. A Diki user does not pin `Shoot.spec.extensions[].version`; enabling
@@ -715,12 +728,14 @@ mutates.
 
 Skipping `status` is deliberate for Diki: the time-based classification is not
 what the user needs here. The interesting field is each version's
-**`providerConfig`** — the ruleset `id`/`version` list — which lives in `spec`
-and is static operator-authored data, readable directly without any computed
-classification. The user reads the profile in the garden cluster, picks a
-`diki` version and its ruleset `id`/`version` entries, and copies those values
-into the `ComplianceScan` custom resource they create in the **shoot cluster**
-to trigger a compliance run:
+**`providerConfig`** — the `supportedVersions` list — which lives in `spec`
+and is static release-authored data, readable directly without any computed
+classification. The top-level `version` identifies the `diki-extension` release
+whose supported combinations the entry describes; the user does not copy it
+anywhere. Instead they read the profile in the garden cluster, pick a
+`diki` scanner version and its ruleset `id`/`versions[]` entries, and copy those
+values into the `ComplianceScan` custom resource they create in the **shoot
+cluster** to trigger a compliance run:
 
 ```yaml
 # ExtensionProfile "diki" in the garden cluster — the user reads this.
@@ -734,20 +749,30 @@ spec:
   readOnly: true                        # inert reference: no resolve, no status, not pinnable
   versions:
     - name: diki
-      version: "0.24.0"                 # semver facade for the diki tag v0.24
+      version: "1.3.0"                  # the diki-extension release version, not the diki scanner version
       lifecycle:
         - classification: supported
           startTime: "2026-07-01T00:00:00Z"
-      # The field the user actually reads: the rulesets this diki version
-      # supports, so they can copy the id + version into their ComplianceScan.
+      # The field the user actually reads: per diki scanner version, the rulesets
+      # that version supports. Read-only reference; not decoded by any component.
       providerConfig:
-        apiVersion: diki.gardener.cloud/v1alpha1
+        apiVersion: diki.extensions.gardener.cloud/v1alpha1
         kind: DikiVersionConfig
-        rulesets:
-          - id: disa-kubernetes-stig
-            version: v2r6
-          - id: security-hardened-k8s
-            version: v0.1.0
+        supportedVersions:
+          - diki: "v0.23"
+            rulesets:
+              - id: disa-kubernetes-stig
+                versions:
+                  - "v2r3"
+          - diki: "v0.24"
+            rulesets:
+              - id: disa-kubernetes-stig
+                versions:
+                  - "v2r3"
+                  - "v2r4"
+              - id: security-hardened-k8s
+                versions:
+                  - "v0.1.0"
 # No status block: a read-only profile is not classified by the controller.
 ```
 
@@ -756,15 +781,15 @@ spec:
 apiVersion: diki.gardener.cloud/v1alpha1
 kind: ComplianceScan
 spec:
-  dikiVersion: v0.24                     # read from spec.versions[].version (0.24.0 → v0.24)
+  dikiVersion: v0.24                     # read from providerConfig.supportedVersions[].diki
   rulesets:
-    - id: disa-kubernetes-stig           # read from spec.versions[].providerConfig.rulesets
-      version: v2r6
+    - id: disa-kubernetes-stig           # read from that entry's rulesets[].id + .versions[]
+      version: v2r4
 ```
 
-So the profile is Diki's **source of truth for which versions and rulesets are
-supported**, and the `ComplianceScan` is where the user acts on that. There is
-no dashboard surface and no Shoot-level pin: the user reads the
+So the profile is Diki's **discovery surface for which scanner versions and
+rulesets are supported**, and the `ComplianceScan` is where the user acts on
+that. There is no dashboard surface and no Shoot-level pin: the user reads the
 `ExtensionProfile` `spec` directly.
 
 Using the profile to **deploy or pin the `diki-operator` version** — the
@@ -773,6 +798,10 @@ clearing `spec.readOnly` so the profile becomes classified, pinnable and
 resolvable — is a plausible future step but is **out of scope** for this GEP.
 This iteration only makes the `diki` version and ruleset information readable;
 it does not classify the versions or change how the operator is rolled out.
+
+This makes Diki a **partial adopter** of the `ExtensionProfile` model: it gains
+the standardised discovery surface without the shoot-level pinning, status
+classification and upgrade machinery that full participants use.
 
 ### Rollout and feature gating
 
