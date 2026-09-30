@@ -58,8 +58,8 @@ version-management surface:
 * The **Traefik extension** ([GEP-57], type `shoot-traefik`) pins one
   component version per extension release.
 * The **Diki extension** ([GEP-63], type `diki`) surfaces a `dikiVersion`
-  plus a list of rulesets with their own versions inside the `ComplianceScan`
-  CRD.
+  (the binary) plus a list of independently-versioned rulesets, each with its
+  own `id` and `version`, inside the `ComplianceScan` CRD.
 * The **Envoy Gateway extension** ([GEP-68], type `envoy-gateway`) lands with
   its own version matrix.
 
@@ -164,7 +164,18 @@ registration:
 The profile is bound to an extension type by requiring `metadata.name` to equal
 the extension `type` (no separate `spec.type` field is needed), so a
 `Shoot.spec.extensions[]` entry of `type: shoot-traefik` resolves to the
-`ExtensionProfile` named `shoot-traefik`.
+`ExtensionProfile` named `shoot-traefik`. This binding is what lets admission
+validate a pin and lets the resolve loop write the version into the seed
+`Extension`.
+
+A profile MAY set **`spec.readOnly: true`** to become an inert reference while
+keeping the same name binding. For a read-only profile
+`gardener-controller-manager` neither computes `status` nor resolves anything
+into a seed `Extension`, and admission rejects any
+`Shoot.spec.extensions[].version` pin against it. Users read its `spec`
+directly — in particular each version's `providerConfig` — but no controller
+mutates it and nothing is deployed from it. This is exactly how Diki uses it —
+see [Diki](#diki--a-read-only-version-profile).
 
 ```yaml
 apiVersion: core.gardener.cloud/v1beta1
@@ -174,6 +185,10 @@ metadata:
   # ControllerRegistration). name == type is the binding; no separate field.
   name: shoot-traefik
 spec:
+  # Optional. When true, the controller leaves the profile inert: it computes
+  # no status and resolves nothing into a seed Extension, and no Shoot may pin a
+  # version against it. Users read spec directly (e.g. Diki). Defaults to false.
+  readOnly: false
   # The auto-update policy applied to shoots of this type that do not set an
   # explicit spec.extensions[].autoUpdate. Optional; defaults to `patch`.
   defaultUpdateStrategy: patch          # patch | minor | major | none
@@ -250,34 +265,35 @@ Because it is optional and per-version, an extension that needs none of it (for
 example Traefik) simply omits it, and the entry stays a pure `version` +
 `lifecycle` bundle.
 
-A typical use is declaring the sub-component versions a top-level version
-supports. Some managed components carry sub-components with their own versions
-— Diki is the clearest example, pairing a `dikiVersion` with a list of
-independently-versioned `rulesets` ([GEP-63]). This GEP versions the
-top-level component; finer-grained sub-component versions stay inside the
-extension's own CRDs (`ComplianceScan.spec.rulesets[]` in Diki's case), and the
-per-version `providerConfig` declares which sub-component versions the entry is
-compatible with:
+One legitimate use is per-version metadata the extension controller needs to
+decode a specific release, such as a version-specific chart or CRD bundle
+reference:
 
 ```yaml
 versions:
-  - name: diki
-    version: "0.24.0"
+  - name: some-component
+    version: "3.2.0"
     lifecycle:
-      - classification: supported
-        startTime: "2026-07-01T00:00:00Z"
-    # Optional, opaque to gardener-apiserver, decoded by the Diki extension.
+      - classification: preview
+        startTime: "2026-08-01T00:00:00Z"
+    # Optional, opaque to gardener-apiserver, decoded by the extension.
     providerConfig:
-      apiVersion: diki.extensions.gardener.cloud/v1alpha1
-      kind: DikiVersionConfig
-      supportedRulesetVersions:
-        - "v0.23"
-        - "v0.24"
+      apiVersion: example.extensions.gardener.cloud/v1alpha1
+      kind: ComponentVersionConfig
+      crdBundle: "component-crds-v3.2"
 ```
 
-A fully nested profile (independent lifecycles per sub-component) is possible
-but out of scope for this iteration; the named-entry structure does not
-preclude it.
+Another use is **advertising** the independently-versioned sub-components a
+top-level version supports, as a read-only reference for users. Diki is the
+canonical example ([GEP-63]): a `diki` version entry can carry the ruleset
+`id`/`version` pairs that version supports, which a user reads and copies into
+their `ComplianceScan`. Note the boundary this keeps: the profile only
+*advertises* these; it neither pins nor validates them. The authoritative
+selection still lives in the extension's own CRDs
+(`ComplianceScan.spec.rulesets[]` in Diki's case). This GEP versions and
+lifecycles the top-level component only; sub-component versions ride along in
+`providerConfig` as opaque, non-enforced metadata. See
+[Diki](#diki--a-read-only-version-profile) for the full flow.
 
 ### How a cluster owner pins a version
 
@@ -339,9 +355,11 @@ profile. An extension therefore starts participating once (a) the operator
 publishes an `ExtensionProfile` and (b) shoots begin setting `version` — no
 coordinated flag day, no broken existing shoots.
 Extensions that surface a component version inside their provider-config today
-(Diki's `dikiVersion`, Falco's `FalcoProfile` selection) move the canonical pin
-to `Shoot.spec.extensions[].version` and deprecate the legacy field on their
-own timeline.
+(for example Falco's `FalcoProfile` selection) move the canonical pin to
+`Shoot.spec.extensions[].version` and deprecate the legacy field on their own
+timeline. Diki is a deliberate exception: it does not adopt the Shoot-level
+pin in this iteration and instead treats its profile as read-only (see
+[Diki](#diki--a-read-only-version-profile)).
 
 **Partial versions.** As with Kubernetes and machine-image versions, a shoot
 may pin a partial version (e.g. `3.1`); `gardener-apiserver` resolves it to the
@@ -453,7 +471,7 @@ flowchart TB
 
   %% ── Row 4: Managed component ──────────────────────────────
   subgraph ShootCluster["Shoot cluster"]
-    PAY["Managed component<br/>(Traefik / Envoy GW /<br/>Falco / Diki)"]
+    PAY["Managed component<br/>(Traefik / Envoy GW / Falco;<br/>Diki is read-only, not deployed<br/>via this path)"]
   end
 
   OP  -- maintains          --> PROF
@@ -562,7 +580,7 @@ flowchart TB
 
   %% ── Shoot cluster ─────────────────────────────────────────
   subgraph ShootCluster["Shoot cluster"]
-    PAY["Managed component<br/>Traefik / Envoy GW / Falco / Diki"]
+    PAY["Managed component<br/>Traefik / Envoy GW / Falco<br/>(Diki read-only, not deployed here)"]
   end
 
   %% Actors → what they author
@@ -608,7 +626,9 @@ only a concrete pinned version.
 1. **Admission — `gardener-apiserver`**
    * `Shoot.spec.extensions[].version` must exist in the `ExtensionProfile`
      whose `metadata.name` equals the entry's `type`. If no `ExtensionProfile`
-     of that name exists, setting a `version` is rejected.
+     of that name exists, setting a `version` is rejected. If the profile sets
+     `spec.readOnly: true`, a `version` pin is likewise rejected — a read-only
+     profile can be read but never pinned.
    * The selected version must be classified `supported` or `deprecated`, or
      `preview` **when the shoot opts into preview** (via
      `autoUpdate.classifications` in a future iteration, or an explicit
@@ -626,7 +646,8 @@ only a concrete pinned version.
 
 2. **Classification, auto-upgrade and resolution — `gardener-controller-manager`**
    * Compute the profile `status` classification from `lifecycle` and current
-     time — reusing the [GEP-32] implementation.
+     time — reusing the [GEP-32] implementation. Skipped for read-only profiles
+     (`spec.readOnly: true`), which the controller does not classify.
    * For each shoot with auto-update enabled, evaluate whether a newer permitted
      version exists within the strategy's boundary (`patch` → same minor,
      `minor` → same major, `major` → any); if so, patch
@@ -637,8 +658,12 @@ only a concrete pinned version.
    * On `expired`, apply the force-upgrade path (below).
    * **Resolve** the effective `(name, version)` and its `providerConfig`, and
      write them into the seed-side `Extension` resource's `spec.providerConfig`
-     (see component 4). This single mechanism serves every extension —
-     including Diki — so no extension re-implements update strategies.
+     (see component 4). This single mechanism serves every extension that opts
+     into Shoot-level pinning, so those extensions do not re-implement update
+     strategies. Skipped for read-only profiles (`spec.readOnly: true`): a
+     read-only profile is neither classified nor resolved — it is inert data the
+     controller leaves untouched (see
+     [Diki](#diki--a-read-only-version-profile)).
 
 3. **Force-upgrade path — `gardener-controller-manager`**
    * When a shoot's pinned version transitions to `expired`, the
@@ -666,45 +691,88 @@ This answers the two questions the design must not leave open: *who resolves*
 extension* (the existing seed `Extension` `providerConfig`, no new library and
 no garden-cluster access from extensions).
 
-### Diki — same loop, replicated into `ComplianceScan`
+### Diki — a read-only version profile
 
-Diki fits this model without an exemption. `gardener-controller-manager`
-classifies the Diki `ExtensionProfile` and resolves the effective `diki`
-version into the seed-side `Extension` resource, exactly as for every other
-extension. The Diki
-extension — whose operator runs in the shoot's namespace on the seed
-([GEP-63]) — reads the resolved version from `spec.providerConfig` and
-**replicates it into the `ComplianceScan` objects** it manages
-(`spec.dikiVersion`), and validates the ruleset selection against the entry's
-`supportedRulesetVersions`. Diki does not need to re-implement Gardener's
-update strategies; it inherits them from the controller-manager loop and only
-propagates the already-resolved value into its CRs.
+Diki uses the `ExtensionProfile` differently from an extension like Traefik, and
+it is worth being explicit about the boundary. For Diki the profile is a
+**read-only reference**: the operator authors, in `spec`, which `diki` versions
+exist and — per version — which rulesets (`id` + `version`) that version
+supports. The Diki user reads this to know what to put in their scan.
+
+What Diki does **not** do in this iteration is drive deployment from the
+profile. A Diki user does not pin `Shoot.spec.extensions[].version`; enabling
+the extension with `type: diki` is all that touches the `Shoot`.
+
+This is expressed by a **`spec.readOnly` flag** on the profile. The `diki`
+extension registers under `type: diki` and its profile keeps the usual
+`metadata.name == type` binding (named `diki`), but sets `spec.readOnly: true`.
+For a read-only profile `gardener-controller-manager` does nothing:
+it neither resolves a version into the seed `Extension` **nor computes
+`status`**. `gardener-apiserver` correspondingly rejects any
+`Shoot.spec.extensions[].version` pin against a read-only profile, so the pin
+path is closed at admission too. The profile is inert data that no controller
+mutates.
+
+Skipping `status` is deliberate for Diki: the time-based classification is not
+what the user needs here. The interesting field is each version's
+**`providerConfig`** — the ruleset `id`/`version` list — which lives in `spec`
+and is static operator-authored data, readable directly without any computed
+classification. The user reads the profile in the garden cluster, picks a
+`diki` version and its ruleset `id`/`version` entries, and copies those values
+into the `ComplianceScan` custom resource they create in the **shoot cluster**
+to trigger a compliance run:
 
 ```yaml
+# ExtensionProfile "diki" in the garden cluster — the user reads this.
+# spec.readOnly: true means the controller does not touch it: no resolve into a
+# seed Extension, no computed status, and no Shoot may pin a version against it.
 apiVersion: core.gardener.cloud/v1beta1
 kind: ExtensionProfile
 metadata:
   name: diki
 spec:
+  readOnly: true                        # inert reference: no resolve, no status, not pinnable
   versions:
     - name: diki
-      version: "0.24.0"
+      version: "0.24.0"                 # semver facade for the diki tag v0.24
       lifecycle:
         - classification: supported
           startTime: "2026-07-01T00:00:00Z"
+      # The field the user actually reads: the rulesets this diki version
+      # supports, so they can copy the id + version into their ComplianceScan.
       providerConfig:
-        apiVersion: diki.extensions.gardener.cloud/v1alpha1
+        apiVersion: diki.gardener.cloud/v1alpha1
         kind: DikiVersionConfig
-        supportedRulesetVersions:
-          - "v0.23"
-          - "v0.24"
+        rulesets:
+          - id: disa-kubernetes-stig
+            version: v2r6
+          - id: security-hardened-k8s
+            version: v0.1.0
+# No status block: a read-only profile is not classified by the controller.
 ```
 
-Which Diki versions are *offered* to owners is derived from the profile
-`status` classifications (a client such as the dashboard shows the selectable
-ones); which version a shoot *runs* is the pinned/auto-upgraded value that
-gardener-controller-manager resolves. (The exact CR-replication mechanics on
-the Diki side are for the Diki maintainers to confirm.)
+```yaml
+# ComplianceScan the user creates in the shoot cluster, filled from the profile.
+apiVersion: diki.gardener.cloud/v1alpha1
+kind: ComplianceScan
+spec:
+  dikiVersion: v0.24                     # read from spec.versions[].version (0.24.0 → v0.24)
+  rulesets:
+    - id: disa-kubernetes-stig           # read from spec.versions[].providerConfig.rulesets
+      version: v2r6
+```
+
+So the profile is Diki's **source of truth for which versions and rulesets are
+supported**, and the `ComplianceScan` is where the user acts on that. There is
+no dashboard surface and no Shoot-level pin: the user reads the
+`ExtensionProfile` `spec` directly.
+
+Using the profile to **deploy or pin the `diki-operator` version** — the
+resolve-into-the-seed-`Extension` path other extensions use, which would mean
+clearing `spec.readOnly` so the profile becomes classified, pinnable and
+resolvable — is a plausible future step but is **out of scope** for this GEP.
+This iteration only makes the `diki` version and ruleset information readable;
+it does not classify the versions or change how the operator is rolled out.
 
 ### Rollout and feature gating
 

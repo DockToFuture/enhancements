@@ -30,7 +30,7 @@ flowchart TB
 
   %% ── Row 4: Managed component ──────────────────────────────
   subgraph ShootCluster["Shoot cluster"]
-    PAY["Managed component<br/>(Traefik / Envoy GW /<br/>Falco / Diki)"]
+    PAY["Managed component<br/>(Traefik / Envoy GW / Falco;<br/>Diki is read-only, not deployed<br/>via this path)"]
   end
 
   %% Actor → specific API object (not the whole garden box)

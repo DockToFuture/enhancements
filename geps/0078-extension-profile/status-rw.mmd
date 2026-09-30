@@ -32,7 +32,7 @@ flowchart TB
 
   %% ── Shoot cluster ─────────────────────────────────────────
   subgraph ShootCluster["Shoot cluster"]
-    PAY["Managed component<br/>Traefik / Envoy GW / Falco / Diki"]
+    PAY["Managed component<br/>Traefik / Envoy GW / Falco<br/>(Diki read-only, not deployed here)"]
   end
 
   %% Actors → what they author
