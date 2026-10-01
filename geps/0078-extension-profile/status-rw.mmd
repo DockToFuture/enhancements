@@ -9,16 +9,15 @@ flowchart TB
     direction TB
     subgraph PROF["ExtensionProfile (core.gardener.cloud) — name == extension type"]
       direction TB
-      SPEC["spec<br/>defaultUpdateStrategy · supportedUpdateStrategies<br/>versions[]: name·version·compatibility·lifecycle·providerConfig"]
-      STAT["status.versions[]<br/>name · version · classification<br/>(preview / supported / deprecated / expired / unavailable)"]
+      SPEC["spec<br/>updateStrategy {default, supported}<br/>components[].versions[]: version·compatibility·updateStrategy·lifecycle·providerConfig"]
+      STAT["status.components[].versions[]<br/>version · classification<br/>(preview / supported / deprecated / expired / unavailable)"]
     end
-    SH["Shoot<br/>spec.extensions[].version<br/>spec.extensions[].autoUpdate {enabled, updateStrategy}<br/>status.lastMaintenance"]
+    SH["Shoot<br/>spec.extensions[].autoUpdate {enabled, updateStrategy}<br/>spec.extensions[].components[].version<br/>status.lastMaintenance"]
     GAPI["gardener-apiserver<br/>(admission)"]
     subgraph GCM["gardener-controller-manager"]
       direction TB
       L1["Loop A — classify<br/>lifecycle + now ⇒ status.classification (GEP-32)"]
-      L2["Loop B — auto-upgrade / force-upgrade<br/>(maintenance window)"]
-      L3["Loop C — resolve<br/>(name,version)+providerConfig ⇒ seed Extension"]
+      L2["Loop B — auto-upgrade / force-upgrade<br/>(maintenance window)<br/>stamps the pinned version's providerConfig when it writes a version"]
     end
   end
 
@@ -32,7 +31,7 @@ flowchart TB
 
   %% ── Shoot cluster ─────────────────────────────────────────
   subgraph ShootCluster["Shoot cluster"]
-    PAY["Managed component<br/>Traefik / Envoy GW / Falco<br/>(Diki read-only, not deployed here)"]
+    PAY["Managed component<br/>Traefik / Envoy GW / Falco"]
   end
 
   %% Actors → what they author
@@ -48,14 +47,13 @@ flowchart TB
   OWN  -. "READS status (via dashboard): offered versions" .-> STAT
 
   %% Admission & auto-upgrade acting on the Shoot
-  GAPI -- "validates spec.version vs profile + K8s compat" --> SH
-  GAPI -- "resolves partial version, persists" --> SH
-  L2   -- "patches version, records lastMaintenance" --> SH
+  GAPI -- "validates component version vs profile + CEL compat" --> SH
+  GAPI -- "resolves partial version + stamps providerConfig, persists" --> SH
+  L2   -- "patches version + stamps providerConfig, records lastMaintenance" --> SH
 
   %% Garden → seed → shoot deployment path
-  L3 -- "writes resolved version" --> EXTSEED
-  GL -- "reconciles" --> EXTSEED
-  GL -- "reconciles" --> EXT
+  GL -- "copies spec.extensions[] into" --> EXTSEED
+  EXT -- "reconciles" --> EXTSEED
   EXT -- "reads resolved version" --> EXTSEED
   EXT -- "deploys at resolved version" --> PAY
 

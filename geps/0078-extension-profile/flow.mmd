@@ -9,10 +9,10 @@ sequenceDiagram
   participant GL as gardenlet
   participant EXT as Extension controller
 
-  Owner->>API: create/update Shoot<br/>(extensions[].version=3.1.4, autoUpdate=patch)
-  API->>CAT: look up version 3.1.4 for this type
+  Owner->>API: create/update Shoot<br/>(extensions[].components[].version=3.1.4, autoUpdate=patch)
+  API->>CAT: look up component version 3.1.4 for this type
   CAT-->>API: entry + lifecycle + compatibility
-  API->>API: validate: classification ∈ {preview†,supported,deprecated}<br/>+ compatibility.kubernetes matches
+  API->>API: validate: classification ∈ {preview†,supported,deprecated}<br/>+ compatibility.validations[] CEL pass
   API-->>Owner: accepted / rejected
 
   loop every reconcile
@@ -21,20 +21,17 @@ sequenceDiagram
   end
 
   loop maintenance window
-    GCM->>GCM: for shoots with auto-update enabled:<br/>find highest permitted version<br/>within the update boundary
-    alt newer version available
-      GCM->>API: patch Shoot.spec.extensions[].version
+    GCM->>GCM: find highest permitted version<br/>within the update boundary
+    alt newer version available AND autoUpdate.enabled
+      GCM->>API: patch Shoot.spec.extensions[].components[].version<br/>+ stamp that version's providerConfig
     end
-    alt current version expired
-      GCM->>API: force-upgrade to highest supported patch<br/>of the next available minor (GEP-5)
+    alt current version expired (even if autoUpdate.enabled=false)
+      GCM->>API: force-upgrade to highest supported patch<br/>of current minor, else next minor (GEP-5)
     end
   end
 
-  loop every reconcile
-    GCM->>SEED: write resolved version into spec.providerConfig
-  end
-
-  GL->>SEED: watch / reconcile
-  GL->>EXT: reconcile Extension resource
+  GL->>API: watch Shoot
+  GL->>SEED: copy spec.extensions[] (incl. providerConfig) into seed Extension
+  EXT->>SEED: reconcile Extension resource
   EXT->>SEED: read resolved version from spec.providerConfig
   EXT->>EXT: deploy the managed component<br/>at the resolved version
