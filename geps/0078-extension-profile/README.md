@@ -22,13 +22,16 @@ boundary — the same UX they already know from `spec.kubernetes.version`.
 
 `gardener-controller-manager` classifies the profile and drives auto-upgrade and
 force-upgrade by **resolving the effective version onto the `Shoot` spec** in the
-garden cluster. From there the resolved version reaches the extension through the
-*existing* path: `gardenlet` copies the shoot's `spec.extensions[]` entry — including
-its `providerConfig` — into the seed-side `Extension` resource
-(`extensions.gardener.cloud/v1alpha1`) exactly as it does today, and the extension
-controller reconciles that resource and reads the version from `spec.providerConfig`.
-No new shared library is required, no component gains new cluster access, and
-extensions never need garden-cluster access.
+garden cluster — writing only the typed
+`Shoot.spec.extensions[].components[].version` field. From there the resolved
+version reaches the extension through the seed-side `Extension` resource
+(`extensions.gardener.cloud/v1alpha1`): `gardenlet` looks up the matched
+`ExtensionProfile` version entry and carries the resolved version — together with
+that entry's optional `providerConfig` — into a **new typed
+`Extension.spec.components[]`** field on the seed. The existing opaque
+`Extension.spec.providerConfig` keeps its current meaning and is not overloaded with
+resolved versions. The extension controller reconciles the `Extension` resource and
+reads the resolved version from `spec.components[]`.
 
 [GEP-5]: ../0005-versioning-policy/README.md
 [GEP-32]: ../0032-version-classification-lifecycle/README.md
@@ -41,9 +44,8 @@ extensions never need garden-cluster access.
 
 A growing set of Gardener extensions manage a component whose version their
 users legitimately care about — the ingress controller behind Traefik, the
-gateway behind Envoy Gateway, the runtime-security agent behind Falco, the
-scanner behind Diki, and the gVisor runtime behind the (planned) gVisor
-extension. Their value proposition *explicitly* includes giving the cluster
+gateway behind Envoy Gateway, the runtime-security agent behind Falco, and the
+scanner behind Diki. Their value proposition *explicitly* includes giving the cluster
 owner control over the version of the installed component: rather than tying
 that version to whatever the extension release happens to ship, these
 extensions aim to let users schedule component updates themselves — within the
@@ -112,9 +114,12 @@ implementation is the reference for this GEP.
    **auto-upgrade** opt-in, and preserve **force-upgrade** on expiry with the
    same patch-then-minor target semantics [GEP-5] defines for Kubernetes
    versions (exact target rule in [Design Details](#design-details)).
-6. Resolve the pinned version to the extension through the **existing seed
-   `Extension` contract**, so extensions read the resolved version from
-   `spec.providerConfig` and need no new library or garden-cluster access.
+6. Resolve the pinned version to the extension through the seed `Extension`
+   resource: `gardener-controller-manager` writes the resolved
+   `Shoot.spec.extensions[].components[].version`, and `gardenlet` carries the
+   resolved version plus the profile entry's optional `providerConfig` into a new
+   typed `Extension.spec.components[]` field on the seed, without overloading the
+   opaque `spec.providerConfig`.
 
 ### Non-Goals
 
@@ -146,7 +151,7 @@ implementation is the reference for this GEP.
 ### Scope of participating extensions
 
 The target set is the extensions discussed in [Motivation](#motivation)
-(Falco, Traefik, Envoy Gateway and the planned gVisor extension). Diki looks
+(Falco, Traefik and Envoy Gateway). Diki looks
 similar but does **not** participate — its versions are release-coupled rather
 than operator-curated (see
 [Non-participating extensions](#non-participating-extensions)). Other
@@ -198,20 +203,24 @@ spec:
   # extension lists one component (e.g. the component's own name).
   components:
   - name: traefik
+    # Per-component auto-update policy, overriding spec.updateStrategy for this
+    # component. Optional; inherits the profile-level default when omitted.
+    updateStrategy:
+      default: patch                    # patch | minor | major
+      supported: [patch, minor, major]
     versions:
     - version: "3.1.4"
       # Compatibility envelope, evaluated on admission: a list of CEL rules,
       # ANDed, against the shoot resource — the same shape as the CRD
-      # x-kubernetes-validations feature.
+      # x-kubernetes-validations feature. The CEL environment binds `self` to the
+      # Shoot being admitted, so rules read e.g. self.spec.kubernetes.version or
+      # self.spec.provider.workers[].machine.image.
       compatibility:
         validations:
-        - message: "Only supports Kubernetes 1.32 or newer"
-          rule: "<cel-expression>"
-      # Per-version auto-update policy, overriding spec.updateStrategy for this
-      # version. Optional; inherits the profile-level default when omitted.
-      updateStrategy:
-        default: patch                  # patch | minor | major
-        supported: [patch, minor, major]
+        - message: "Requires Kubernetes 1.32 or newer"
+          rule: "self.spec.kubernetes.version.matches('^1\\\\.(3[2-9]|[4-9][0-9])')"
+        - message: "Only supported on Garden Linux worker nodes"
+          rule: "self.spec.provider.workers.all(w, w.machine.image.name == 'gardenlinux')"
       # Identical shape to CloudProfile version lifecycles ([GEP-32]).
       lifecycle:
         - classification: preview
@@ -224,8 +233,8 @@ spec:
     - version: "3.2.0"
       compatibility:
         validations:
-        - message: "Only supports Kubernetes 1.33 or newer"
-          rule: "<cel-expression>"
+        - message: "Requires Kubernetes 1.33 or newer"
+          rule: "self.spec.kubernetes.version.matches('^1\\\\.(3[3-9]|[4-9][0-9])')"
       lifecycle:
         - classification: preview
           startTime: "2026-08-01T00:00:00Z"
@@ -255,10 +264,12 @@ status:
 ```
 
 A profile offers a list of named `components`; each component carries its own
-list of `versions`. A version entry is a single `version` string carrying its
-own `lifecycle`, `compatibility` and optional `updateStrategy`; it is promoted,
-deprecated and expired as a unit, independently of the other versions of its
-component and of the other components. This lets one extension type offer
+`updateStrategy` override (optional) and its own list of `versions`. A version
+entry is a single `version` string carrying its own `lifecycle` and
+`compatibility`; it is promoted, deprecated and expired as a unit, independently
+of the other versions of its component and of the other components. The
+`updateStrategy` override, by contrast, is set **per component**, not per
+version. This lets one extension type offer
 several components that version independently (`traefik` and `proxy` above). The
 `patch | minor | major` values intentionally mirror the `CloudProfile`
 machine-image `updateStrategy` field (`MachineImageUpdateStrategy`, which has
@@ -282,13 +293,14 @@ Deliberately absent:
 
 Each version entry MAY carry an **optional `providerConfig`** — a
 `RawExtension` whose shape is owned by the extension. The core fields
-(`version`, `lifecycle`, `compatibility`, `updateStrategy`, `classification`)
+(`version`, `lifecycle`, `compatibility`, `classification`)
 stay homogeneous for everyone; `providerConfig` is the escape hatch for
 extension-specific metadata a version needs. `gardener-apiserver` treats it
-opaquely; `gardener-controller-manager` merges the resolved entry's
-`providerConfig` into the shoot's `spec.extensions[]` entry, which `gardenlet`
-then copies into the seed `Extension` as it already does, where the extension
-controller decodes it.
+opaquely. It is **not** written into the `Shoot` spec: when a version is
+resolved, `gardenlet` looks up the matched profile version entry and carries its
+`providerConfig` into the seed `Extension.spec.components[].providerConfig`
+field (see [Deployment](#design-details)), where the extension controller
+decodes it. The `Shoot` only ever carries the resolved `components[].version`.
 
 Because it is optional and per-version, an extension that needs none of it (for
 example Traefik) simply omits it, and the entry stays a pure `version` +
@@ -339,6 +351,11 @@ kind: Shoot
 spec:
   extensions:
     - type: shoot-traefik
+      # The existing opaque extension providerConfig (unchanged by this GEP).
+      providerConfig:
+        apiVersion: traefik.extensions.gardener.cloud/v1alpha1
+        kind: TraefikConfig
+        # ...
       # Extension-level default auto-update policy for every component of this
       # extension that does not set its own autoUpdate below.
       autoUpdate:
@@ -351,10 +368,6 @@ spec:
         autoUpdate:
           enabled: true
           updateStrategy: patch        # patch | minor | major
-        providerConfig:
-          apiVersion: traefik.extensions.gardener.cloud/v1alpha1
-          kind: TraefikConfig
-          # ...
 ```
 
 These fields live on the shoot's core API (not inside `providerConfig`) on
@@ -365,8 +378,8 @@ not a `RawExtension`.
 
 A component's effective `autoUpdate` is resolved in order: its own
 `components[].autoUpdate` if set, otherwise the extension-level `autoUpdate`,
-otherwise the version's `updateStrategy.default`, otherwise the profile's
-`updateStrategy.default`, falling back to `patch`. For a given component:
+otherwise the component's `updateStrategy.default` in the profile, otherwise the
+profile's `updateStrategy.default`, falling back to `patch`. For a given component:
 
 * `updateStrategy: patch` auto-upgrades to newer supported *patch*
   releases within the pinned minor (`3.1.4 → 3.1.7`).
@@ -418,7 +431,7 @@ extension-level `autoUpdate`), the effective default is *not* frozen
 (`enabled: false`): leaving shoots frozen by default silently accumulates
 components that will eventually force-upgrade. The default is the
 operator-configurable
-`ExtensionProfile.spec.updateStrategy.default` (which a per-version
+`ExtensionProfile.spec.updateStrategy.default` (which a per-component
 `updateStrategy.default` may override); an extension whose profile sets no
 explicit default inherits `patch` — the least-surprising automatic policy,
 keeping shoots current on security and bug-fix releases within their pinned
@@ -466,8 +479,9 @@ stateDiagram-v2
   expired --> [*]: removed from the profile
 
   note right of preview
-    Selectable only when the
-    shoot opts into preview
+    Explicitly selectable;
+    never a defaulting or
+    auto-upgrade target
   end note
   note right of supported
     Default target for fresh
@@ -512,7 +526,7 @@ flowchart TB
   subgraph Seed["Seed cluster"]
     direction LR
     GL["gardenlet"]
-    EXTSEED["extensions.gardener.cloud<br/>Extension<br/>(resolved version in<br/>spec.providerConfig)"]
+    EXTSEED["extensions.gardener.cloud<br/>Extension<br/>(resolved versions in<br/>new spec.components[])"]
     EXT["Extension<br/>controller"]
   end
 
@@ -530,13 +544,14 @@ flowchart TB
   GAPI -- validates against profile --> SH
   GAPI -- reads                      --> PROF
   GCM  -- classifies                 --> PROF
-  GCM  -- auto-upgrades + stamps providerConfig --> SH
+  GCM  -- "auto-upgrades (writes components[].version)" --> SH
 
   %% Garden → seed → shoot deployment path
-  SH   -- reconciled by                 --> GL
-  GL   -- copies resolved version into  --> EXTSEED
-  EXT  -- reconciles                    --> EXTSEED
-  EXT  -- deploys                       --> PAY
+  SH   -- reconciled by                       --> GL
+  GL   -- "looks up profile entry; writes resolved version + providerConfig into spec.components[]" --> EXTSEED
+  GL   -. reads providerConfig .->              PROF
+  EXT  -- reconciles                          --> EXTSEED
+  EXT  -- deploys                             --> PAY
 
   %% Highlight where the version list lives
   classDef newResource fill:#fff4c2,stroke:#d4a017,stroke-width:2px;
@@ -559,7 +574,7 @@ sequenceDiagram
   Owner->>API: create/update Shoot<br/>(extensions[].components[].version=3.1.4, autoUpdate=patch)
   API->>CAT: look up component version 3.1.4 for this type
   CAT-->>API: entry + lifecycle + compatibility
-  API->>API: validate: classification ∈ {preview†,supported,deprecated}<br/>+ compatibility.validations[] CEL pass
+  API->>API: validate (only when version changes):<br/>classification ∈ {preview,supported,deprecated}<br/>+ compatibility.validations[] CEL pass
   API-->>Owner: accepted / rejected
 
   loop every reconcile
@@ -568,104 +583,30 @@ sequenceDiagram
   end
 
   loop maintenance window
-    GCM->>GCM: find highest permitted version<br/>within the update boundary
+    GCM->>GCM: find highest permitted & compatible version<br/>within the update boundary
     alt newer version available AND autoUpdate.enabled
-      GCM->>API: patch Shoot.spec.extensions[].components[].version<br/>+ stamp that version's providerConfig
+      GCM->>API: patch Shoot.spec.extensions[].components[].version
     end
     alt current version expired (even if autoUpdate.enabled=false)
-      GCM->>API: force-upgrade to highest supported patch<br/>of current minor, else next minor (GEP-5)
+      GCM->>API: force-upgrade to highest supported, compatible patch<br/>of current minor, else next minor (GEP-5)
     end
   end
 
   GL->>API: watch Shoot
-  GL->>SEED: copy spec.extensions[] (incl. providerConfig) into seed Extension
+  GL->>CAT: look up matched version entry's providerConfig
+  GL->>SEED: write resolved version + providerConfig into Extension.spec.components[]
   EXT->>SEED: reconcile Extension resource
-  EXT->>SEED: read resolved version from spec.providerConfig
+  EXT->>SEED: read resolved version from spec.components[]
   EXT->>EXT: deploy the managed component<br/>at the resolved version
 ```
 
-The profile `status` deserves a closer look, because it is the one field that
-is *computed* rather than authored, and it has a single writer and several
-readers. `gardener-controller-manager` writes it (the classify loop); nobody
-else does. Everything that decides whether a version is *usable* — admission
-selectability, the auto-upgrade target search, the dashboard's list of offered
-versions — reads it. The seed-side extension controller reads none of it: it
-only ever sees a resolved concrete version in the seed `Extension`
-`providerConfig`, and never the profile at all.
-
-```mermaid
-%%{init: {'theme': 'default', 'themeVariables': {'background': '#ffffff'}}}%%
-flowchart TB
-  %% ── Actors ────────────────────────────────────────────────
-  OP["Landscape operator"]
-  OWN["Cluster owner"]
-
-  %% ── Garden cluster: the ExtensionProfile, split spec/status ─
-  subgraph Garden["Garden cluster"]
-    direction TB
-    subgraph PROF["ExtensionProfile (core.gardener.cloud) — name == extension type"]
-      direction TB
-      SPEC["spec<br/>updateStrategy {default, supported}<br/>components[].versions[]: version·compatibility·updateStrategy·lifecycle·providerConfig"]
-      STAT["status.components[].versions[]<br/>version · classification<br/>(preview / supported / deprecated / expired / unavailable)"]
-    end
-    SH["Shoot<br/>spec.extensions[].autoUpdate {enabled, updateStrategy}<br/>spec.extensions[].components[].version<br/>status.lastMaintenance"]
-    GAPI["gardener-apiserver<br/>(admission)"]
-    subgraph GCM["gardener-controller-manager"]
-      direction TB
-      L1["Loop A — classify<br/>lifecycle + now ⇒ status.classification (GEP-32)"]
-      L2["Loop B — auto-upgrade / force-upgrade<br/>(maintenance window)<br/>stamps the pinned version's providerConfig when it writes a version"]
-    end
-  end
-
-  %% ── Seed cluster ──────────────────────────────────────────
-  subgraph Seed["Seed cluster"]
-    direction TB
-    EXTSEED["Extension (extensions.gardener.cloud)<br/>spec.providerConfig = resolved version"]
-    GL["gardenlet"]
-    EXT["Extension controller<br/>(never reads the profile)"]
-  end
-
-  %% ── Shoot cluster ─────────────────────────────────────────
-  subgraph ShootCluster["Shoot cluster"]
-    PAY["Managed component<br/>Traefik / Envoy GW / Falco"]
-  end
-
-  %% Actors → what they author
-  OP  -- "maintains spec" --> SPEC
-  OWN -- "pins version / sets autoUpdate" --> SH
-
-  %% The single WRITER of status
-  L1 == "WRITES status" ==> STAT
-
-  %% The READERS of status
-  GAPI -. "READS status: selectable? accept/reject" .-> STAT
-  L2   -. "READS status: upgrade target · expiry" .-> STAT
-  OWN  -. "READS status (via dashboard): offered versions" .-> STAT
-
-  %% Admission & auto-upgrade acting on the Shoot
-  GAPI -- "validates component version vs profile + CEL compat" --> SH
-  GAPI -- "resolves partial version + stamps providerConfig, persists" --> SH
-  L2   -- "patches version + stamps providerConfig, records lastMaintenance" --> SH
-
-  %% Garden → seed → shoot deployment path
-  GL -- "copies spec.extensions[] into" --> EXTSEED
-  EXT -- "reconciles" --> EXTSEED
-  EXT -- "reads resolved version" --> EXTSEED
-  EXT -- "deploys at resolved version" --> PAY
-
-  %% Highlight the new resource, the computed status, and the writer
-  classDef newResource fill:#fff4c2,stroke:#d4a017,stroke-width:2px;
-  classDef statusBox fill:#d6ebff,stroke:#1f6feb,stroke-width:2px;
-  classDef writeNode fill:#e7f9e7,stroke:#1a7f37,stroke-width:2px;
-  class PROF,SPEC newResource;
-  class STAT statusBox;
-  class L1 writeNode;
-```
-
-The solid arrow into `status` is the single writer (the classify loop); the
-dotted arrows are its readers. Everything upstream of resolution keys off the
-computed classification, while everything at or downstream of resolution sees
-only a concrete pinned version.
+The profile `status` is the one field that is *computed* rather than authored,
+with a single writer and several readers. `gardener-controller-manager` writes it
+(the classify loop); nobody else does. Everything that decides whether a version
+is *usable* — admission selectability, the auto-upgrade target search, the
+dashboard's list of offered versions — reads it. The seed-side extension
+controller reads none of it: it only ever sees a resolved concrete version in the
+seed `Extension.spec.components[]`, and never the profile at all.
 
 **Concretely responsible components:**
 
@@ -674,18 +615,27 @@ only a concrete pinned version.
      matching component `name`, in the `ExtensionProfile` whose `metadata.name`
      equals the entry's `type`. If no `ExtensionProfile` of that name exists,
      pinning a version is rejected.
-   * The selected version must be classified `supported` or `deprecated`, or
-     `preview` **when the shoot opts into preview** (via
-     `autoUpdate.classifications` in a future iteration, or an explicit
-     preview acknowledgement). `unavailable` and `expired` are rejected — the
-     only difference between the classifications at admission is whether the
-     version is selectable at all.
+   * The selected version must be classified `supported`, `deprecated`, or
+     `preview`. A `preview` version may be **explicitly pinned** (exactly as a
+     cluster owner may pin a `preview` Kubernetes version today); it is excluded
+     only from defaulting and from the auto-upgrade target search, never from an
+     explicit pin. `unavailable` and `expired` are rejected.
+   * These existence, classification and compatibility checks run **only when the
+     `components[].version` changes** on the request (create, or an update that
+     touches the pin). A shoot whose pinned version has since become `expired` or
+     been removed from the profile is therefore not blocked from unrelated updates
+     — maintenance patches, worker changes, etc. all still go through; only an
+     attempt to *set* an invalid version is rejected.
    * The version entry's `compatibility.validations[]` CEL rules must all
-     evaluate to true against the shoot resource.
+     evaluate to true against the shoot resource. The CEL environment binds `self`
+     to the `Shoot` being admitted.
    * A partial `version` is resolved to the highest matching supported version
      and persisted.
+   * **Protecting in-use versions** (mirroring `CloudProfile`): admission on the
+     `ExtensionProfile` rejects removing a version — or deleting the profile —
+     while any shoot still pins that version, so a pin never dangles.
    * A component's effective `autoUpdate` is resolved from (in order) its own
-     `components[].autoUpdate`, the extension-level `autoUpdate`, the version's
+     `components[].autoUpdate`, the extension-level `autoUpdate`, the component's
      `updateStrategy.default`, and the profile's `updateStrategy.default`,
      falling back to `patch`. A strategy not listed in the applicable
      `updateStrategy.supported` is rejected — including as the resolved default,
@@ -697,24 +647,27 @@ only a concrete pinned version.
      time — reusing the [GEP-32] implementation.
    * For each shoot with auto-update enabled, evaluate per pinned component
      whether a newer permitted version exists within the strategy's boundary
-     (`patch` → same minor, `minor` → same major, `major` → any); if so, patch
-     the matching `spec.extensions[].components[].version` during the next
-     maintenance window and emit a `Shoot` event. This runs in the shoot
+     (`patch` → same minor, `minor` → same major, `major` → any). Candidates are
+     filtered to those classified `supported`/`deprecated` **and** whose
+     `compatibility.validations[]` evaluate to true against the shoot, so the
+     target is never a version incompatible with the shoot. If a suitable target
+     exists, patch the matching `spec.extensions[].components[].version` during
+     the next maintenance window and emit a `Shoot` event. This runs in the shoot
      maintenance controller alongside the existing Kubernetes/machine-image
      maintenance logic, and the applied change is recorded in
      `Shoot.status.lastMaintenance` just like those upgrades.
    * On `expired`, apply the force-upgrade path (below).
-   * When it writes a version (the pin's one-time resolution at admission, or an
-     auto-/force-upgrade in the maintenance window), it also stamps the matched
-     profile version entry's optional `providerConfig` onto the shoot's own
-     `spec.extensions[]` entry (in the garden cluster — the only cluster
-     `gardener-controller-manager` can write to). It does *not* touch any seed
-     resource. On a steady-state reconcile with no pin change and no profile
-     change, nothing is written to the shoot spec — there is no standing
-     "resolve every reconcile" loop, so `spec.extensions[]` has exactly two
-     writers: `gardener-apiserver` admission and the maintenance-window upgrade
-     step. From the shoot spec the resolved value reaches the seed through the
-     existing path (see component 4). This single mechanism serves every
+   * `gardener-controller-manager` writes only the typed
+     `spec.extensions[].components[].version` field on the shoot (in the garden
+     cluster — the only cluster it can write to). It does **not** write any
+     `providerConfig` into the shoot and does not touch any seed resource. On a
+     steady-state reconcile with no pin change, nothing is written to the shoot
+     spec — there is no standing "resolve every reconcile" loop, so
+     `spec.extensions[].components[].version` has exactly two writers:
+     `gardener-apiserver` admission (partial-version resolution) and the
+     maintenance-window upgrade step. The profile entry's optional
+     `providerConfig` is carried to the seed by `gardenlet`, not by this
+     controller (see component 4). This single mechanism serves every
      participating extension, so those extensions do not re-implement update
      strategies.
 
@@ -723,28 +676,55 @@ only a concrete pinned version.
      controller-manager patches the matching
      `spec.extensions[].components[].version` to the **highest supported patch of
      the current minor**, or — if none remains — to the **highest supported patch of the next available minor**, exactly as
-     [GEP-5] specifies for Kubernetes versions. It never targets an
+     [GEP-5] specifies for Kubernetes versions. The target search is filtered by
+     `compatibility.validations[]` against the shoot, so the forced target is
+     always a supported *and compatible* version. It never targets an
      unsupported version. This runs even for shoots that have opted out of
      auto-update (`autoUpdate.enabled: false`) — expiry forces the upgrade
      regardless — and is likewise
      recorded in `Shoot.status.lastMaintenance`.
 
 4. **Deployment — `gardenlet` and extension controller**
-   * `gardener-controller-manager` has already resolved the effective version
-     (and merged the entry's optional `providerConfig`) onto the shoot's
-     `spec.extensions[]` entry in the garden cluster. No new seed access is
-     introduced.
-   * `gardenlet` copies the shoot's `spec.extensions[]` entry — including its
-     `providerConfig` — into the seed-side `Extension` resource
-     (`extensions.gardener.cloud/v1alpha1`), exactly as it already does for
-     extension provider-config today. The extension controller reconciles that
-     `Extension` resource, reads the resolved version from
-     `spec.providerConfig` and deploys the managed component at that version.
-     Everything auxiliary (charts, images, sidecars) remains its internal
-     concern. Whether the controller ultimately deploys the component into the
-     shoot cluster or seed-side next to the control plane does not change this
-     resolution path — the resolved version arrives the same way, and where it
-     is deployed stays the extension controller's concern.
+   * `gardener-controller-manager` has already resolved the effective version onto
+     the shoot's `spec.extensions[].components[].version` in the garden cluster.
+   * **New seed `Extension` API field.** The seed-side `Extension` resource
+     (`extensions.gardener.cloud/v1alpha1`) today has no field that can carry a
+     per-component version, so this GEP extends it with a typed
+     `spec.components[]` list. Each entry is `{name, version, providerConfig?}`.
+     The existing opaque `spec.providerConfig` keeps its current meaning and is
+     *not* overloaded with resolved versions.
+   * When `gardenlet` reconciles the shoot, it reads the resolved
+     `spec.extensions[].components[].version` and looks up the matching version
+     entry in the `ExtensionProfile`. It writes the resolved version together with
+     that entry's optional `providerConfig` into `Extension.spec.components[]` on
+     the seed:
+
+     ```yaml
+     apiVersion: extensions.gardener.cloud/v1alpha1
+     kind: Extension
+     spec:
+       type: shoot-traefik
+       providerConfig:            # existing, opaque — unchanged by this GEP
+         apiVersion: traefik.extensions.gardener.cloud/v1alpha1
+         kind: TraefikConfig
+         # ...
+       components:                # new typed field
+       - name: traefik
+         version: "3.1.4"         # resolved by gardener-controller-manager
+         providerConfig:          # copied verbatim from the profile version entry
+           apiVersion: traefik.extensions.gardener.cloud/v1alpha1
+           kind: TraefikComponentConfig
+           # ...
+     ```
+
+   * The extension controller reconciles that `Extension` resource, reads the
+     resolved version (and optional `providerConfig`) from `spec.components[]`, and
+     deploys the managed component at that version. Everything auxiliary (charts,
+     images, sidecars) remains its internal concern. Whether the controller
+     ultimately deploys the component into the shoot cluster or seed-side next to
+     the control plane does not change this resolution path — the resolved version
+     arrives the same way, and where it is deployed stays the extension
+     controller's concern.
    * **Seed-side components.** A component deployed into the seed (next to the
      control plane) rather than into the shoot uses this identical path, and its
      version is classified, pinned and auto-upgraded exactly like a shoot-side
@@ -757,13 +737,6 @@ only a concrete pinned version.
      `gardener-resource-manager`); re-expressing it per version here would
      duplicate a guarantee the platform already makes.
 
-This answers the two questions the design must not leave open: *who resolves*
-(`gardener-controller-manager`, by patching the shoot spec in the garden cluster)
-and *how the resolved version reaches the extension* (the existing
-gardenlet-maintained seed `Extension` `providerConfig` — no new seed access for
-`gardener-controller-manager`, no new library, and no garden-cluster access from
-extensions).
-
 ### Rollout and feature gating
 
 The implementation spans a core API addition
@@ -775,8 +748,7 @@ across releases. To keep partially-merged pieces from shipping enabled in
 intermediate releases, the whole surface is guarded by a feature gate
 (`ExtensionComponentVersions`), disabled by default until the classify /
 auto-upgrade / resolve loops and admission are all present, mirroring the
-incremental-rollout approach in [GEP-57] and [GEP-68]. Promotion out of the
-feature gate is tracked as a Future Enhancement.
+incremental-rollout approach in [GEP-57] and [GEP-68].
 
 ## Drawbacks
 
@@ -836,15 +808,43 @@ homogeneous `ExtensionProfile` defined here.
 Considered, deferred. A channel is defined as "the highest supported version in
 tier X"; you need the classified-version primitive first, which this GEP
 delivers. `autoUpdate.updateStrategy: minor` already covers a large fraction of
-the channel value proposition. Channels remain a natural follow-up: a future
+the channel value proposition, and
+[gardener/gardener#13667](https://github.com/gardener/gardener/issues/13667)
+(configurable auto-update classifications for Kubernetes/machine-image versions)
+would carry much of the remaining channel semantics once applied here too.
+Channels remain a natural follow-up: a future
 `channel` field on `Shoot.spec.extensions[]` could resolve to a version via the
 `ExtensionProfile` without any change to its shape.
 
 ### Two-level versioning (extension binary version × component profile)
 
 Deferred. Expressive but adds a second axis without a compelling near-term use
-case. If a real coupling constraint appears, it can be expressed as an
-additional `compatibility.validations[]` rule without a schema break.
+case. Such a coupling **cannot** be expressed as a `compatibility.validations[]`
+rule: those CEL rules evaluate against the `Shoot`, which does not carry the
+extension controller's binary version, so the constraint has nothing to read. A
+real coupling constraint would need a different mechanism (e.g. a gate the
+extension itself enforces at reconcile time), which is out of scope here.
+
+## Future Enhancements
+
+* **Per-worker-pool component versions and `ContainerRuntime` extensions.**
+  Extensions that configure components *on the worker nodes* — e.g. the gVisor
+  ([`gardener-extension-runtime-gvisor`](https://github.com/gardener/gardener-extension-runtime-gvisor))
+  and Kata runtimes, configured per worker pool via
+  `workers[].cri.containerRuntimes[]` rather than `spec.extensions[]` — may need a
+  distinct component version per pool (e.g. a per-pool GPU-driver version). The
+  TSC placed such extensions out of scope for this iteration. The named-entry
+  `components[]` structure does not preclude adding a worker-pool selector later;
+  this GEP deliberately keeps the API open to it.
+* **Auto-upgrade into `preview`.** A future `autoUpdate.classifications` list
+  would let a shoot opt its auto-upgrade target search into `preview` versions,
+  mirroring
+  [gardener/gardener#13667](https://github.com/gardener/gardener/issues/13667) for
+  Kubernetes and machine-image versions. The `autoUpdate` block is already shaped
+  to accept it without a schema break.
+* **Release channels.** GKE-style `rapid` / `regular` / `stable` channels resolved
+  through the `ExtensionProfile` (see
+  [Release channels](#release-channels-gke-style-rapid--regular--stable)).
 
 ## Non-participating extensions
 
