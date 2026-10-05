@@ -42,11 +42,11 @@ reads the resolved version from `spec.components[]`.
 
 ## Motivation
 
-A growing set of Gardener extensions manage a component whose version their
+A growing set of Gardener extensions manage one or more components whose version their
 users legitimately care about — the ingress controller behind Traefik, the
 gateway behind Envoy Gateway, the runtime-security agent behind Falco, and the
 scanner behind Diki. Their value proposition *explicitly* includes giving the cluster
-owner control over the version of the installed component: rather than tying
+owner control over the version of the installed components: rather than tying
 that version to whatever the extension release happens to ship, these
 extensions aim to let users schedule component updates themselves — within the
 supported-versions / deprecation-window / expiry-date boundaries the landscape
@@ -111,9 +111,11 @@ implementation is the reference for this GEP.
    `CloudProfile` implements today ([GEP-32]) — verbatim, with no parallel
    vocabulary.
 5. Give cluster owners an explicit **pin** surface plus a documented
-   **auto-upgrade** opt-in, and preserve **force-upgrade** on expiry with the
-   same patch-then-minor target semantics [GEP-5] defines for Kubernetes
-   versions (exact target rule in [Design Details](#design-details)).
+   **auto-upgrade** opt-in, and keep a component current by **forcing an upgrade**
+   once its pinned version expires: the forced target is the newest supported
+   version within the same minor, or — if none remains — the newest supported
+   version of the next available minor (the exact rule is spelled out in
+   [Design Details](#design-details)).
 6. Resolve the pinned version to the extension through the seed `Extension`
    resource: `gardener-controller-manager` writes the resolved
    `Shoot.spec.extensions[].components[].version`, and `gardenlet` carries the
@@ -212,15 +214,15 @@ spec:
     - version: "3.1.4"
       # Compatibility envelope, evaluated on admission: a list of CEL rules,
       # ANDed, against the shoot resource — the same shape as the CRD
-      # x-kubernetes-validations feature. The CEL environment binds `self` to the
-      # Shoot being admitted, so rules read e.g. self.spec.kubernetes.version or
-      # self.spec.provider.workers[].machine.image.
+      # x-kubernetes-validations feature. The CEL environment binds `shoot` to the
+      # Shoot being admitted, so rules read e.g. shoot.spec.kubernetes.version or
+      # shoot.spec.provider.workers[].machine.image.
       compatibility:
         validations:
         - message: "Requires Kubernetes 1.32 or newer"
-          rule: "self.spec.kubernetes.version.matches('^1\\\\.(3[2-9]|[4-9][0-9])')"
+          rule: "shoot.spec.kubernetes.version.matches('^1\\\\.(3[2-9]|[4-9][0-9])')"
         - message: "Only supported on Garden Linux worker nodes"
-          rule: "self.spec.provider.workers.all(w, w.machine.image.name == 'gardenlinux')"
+          rule: "shoot.spec.provider.workers.all(w, w.machine.image.name == 'gardenlinux')"
       # Identical shape to CloudProfile version lifecycles ([GEP-32]).
       lifecycle:
         - classification: preview
@@ -234,7 +236,7 @@ spec:
       compatibility:
         validations:
         - message: "Requires Kubernetes 1.33 or newer"
-          rule: "self.spec.kubernetes.version.matches('^1\\\\.(3[3-9]|[4-9][0-9])')"
+          rule: "shoot.spec.kubernetes.version.matches('^1\\\\.(3[3-9]|[4-9][0-9])')"
       lifecycle:
         - classification: preview
           startTime: "2026-08-01T00:00:00Z"
@@ -627,8 +629,10 @@ seed `Extension.spec.components[]`, and never the profile at all.
      — maintenance patches, worker changes, etc. all still go through; only an
      attempt to *set* an invalid version is rejected.
    * The version entry's `compatibility.validations[]` CEL rules must all
-     evaluate to true against the shoot resource. The CEL environment binds `self`
-     to the `Shoot` being admitted.
+     evaluate to true against the shoot resource. The CEL environment binds `shoot`
+     to the `Shoot` being admitted. (The variable is named `shoot` rather than the
+     usual `self` because the rule lives on the `ExtensionProfile` but is evaluated
+     against the `Shoot`, so `self` would be misleading.)
    * A partial `version` is resolved to the highest matching supported version
      and persisted.
    * **Protecting in-use versions** (mirroring `CloudProfile`): admission on the
@@ -676,13 +680,11 @@ seed `Extension.spec.components[]`, and never the profile at all.
      controller-manager patches the matching
      `spec.extensions[].components[].version` to the **highest supported patch of
      the current minor**, or — if none remains — to the **highest supported patch of the next available minor**, exactly as
-     [GEP-5] specifies for Kubernetes versions. The target search is filtered by
-     `compatibility.validations[]` against the shoot, so the forced target is
-     always a supported *and compatible* version. It never targets an
-     unsupported version. This runs even for shoots that have opted out of
-     auto-update (`autoUpdate.enabled: false`) — expiry forces the upgrade
-     regardless — and is likewise
-     recorded in `Shoot.status.lastMaintenance`.
+     [GEP-5] specifies for Kubernetes versions. The target is filtered by
+     `compatibility.validations[]` and recorded in `Shoot.status.lastMaintenance`
+     exactly as the auto-upgrade path above. What is distinct about the force path
+     is that it runs **even for shoots that have opted out of auto-update**
+     (`autoUpdate.enabled: false`) — expiry forces the upgrade regardless.
 
 4. **Deployment — `gardenlet` and extension controller**
    * `gardener-controller-manager` has already resolved the effective version onto
