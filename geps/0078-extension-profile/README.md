@@ -161,6 +161,22 @@ extensions — CNI, cloud-provider, OS extensions, and similar — remain
 unchanged; they already have a versioning story that fits their nature and this
 GEP has no ambition to touch them.
 
+The scope is deliberately tied to the generic `Extension` resource kind
+(`extensions.gardener.cloud`, `kind: Extension`) — the controllers a shoot
+configures through `Shoot.spec.extensions[]`. That core entry carries only a
+`type` string (no `kind`) and always maps to the `Extension` seed resource, so
+Falco (`shoot-falco-service`), Traefik (`shoot-traefik`) and Envoy Gateway
+(`envoy-gateway`) are exactly the addressable set. Extensions registered under
+other resource kinds — e.g. provider extensions serving `ControlPlane`,
+`Infrastructure` or `Worker` — are **out of scope**: a shoot does not configure
+them through `spec.extensions[]` (they come in via `spec.provider`,
+`spec.networking`, …), so there is no pin surface for an `ExtensionProfile` to
+bind to, and their component versioning (OS images, CNI, CSI) already lives in
+`CloudProfile`. This scoping is also what makes the `metadata.name == type`
+binding (below) unambiguous: a `type` is unique within the `Extension` kind, so
+the cross-kind collision that a bare `type` would otherwise allow (e.g. `aws`
+existing under `ControlPlane`, `Infrastructure` and `Worker`) cannot arise.
+
 ### The `ExtensionProfile` resource
 
 The **landscape operator** maintains one **`ExtensionProfile`** resource per
