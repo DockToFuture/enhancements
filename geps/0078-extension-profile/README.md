@@ -226,8 +226,8 @@ spec:
   # The auto-update policy for this extension type. `default` is applied to
   # shoots that do not set an explicit autoUpdate; `supported` is the allow-list
   # of strategies this extension implements — admission rejects any shoot (or
-  # default) requesting a strategy not listed. A per-version updateStrategy
-  # (below) overrides this profile-level default for that version.
+  # default) requesting a strategy not listed. A per-component updateStrategy
+  # (below) overrides this profile-level default for that component.
   updateStrategy:
     default: patch                      # patch | minor | major
     supported: [patch, minor, major]
