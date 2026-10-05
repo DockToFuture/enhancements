@@ -120,8 +120,7 @@ implementation is the reference for this GEP.
    resource: `gardener-controller-manager` writes the resolved
    `Shoot.spec.extensions[].components[].version`, and `gardenlet` carries the
    resolved version plus the profile entry's optional `providerConfig` into a new
-   typed `Extension.spec.components[]` field on the seed, without overloading the
-   opaque `spec.providerConfig`.
+   typed `Extension.spec.components[]` field on the seed.
 
 ### Non-Goals
 
