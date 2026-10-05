@@ -316,8 +316,15 @@ sentinel strategy value.
 
 Deliberately absent:
 
-* No `controllerVersion` gate. Operators roll the profile and controller binary
-  as one unit; a per-entry gate would give a false sense of safety.
+* No `controllerVersion` gate. This concerns a different layer than the
+  component lifecycle: the *component* version a shoot pins is decoupled from the
+  extension release (the whole point of this GEP), but the *extension controller
+  binary* and the set of component versions a given build can actually deploy are
+  rolled out together by the operator. A per-version gate pinning each component
+  version to a required controller version would therefore add bookkeeping and a
+  false sense of safety — a given controller build already implies which
+  component versions it can serve — without protecting anything the operator's
+  own rollout does not already guarantee.
 * No `dependencies` bundle. The extension controller already knows which
   auxiliary images and charts correspond to a resolved version; encoding that
   here duplicates state.
