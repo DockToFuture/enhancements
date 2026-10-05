@@ -614,7 +614,7 @@ sequenceDiagram
   Owner->>API: create/update Shoot<br/>(extensions[].components[].version=3.1.4, autoUpdate=patch)
   API->>CAT: look up component version 3.1.4 for this type
   CAT-->>API: entry + lifecycle + compatibility
-  API->>API: validate (only when version changes):<br/>classification ∈ {preview,supported,deprecated}<br/>+ compatibility.validations[] CEL pass
+  API->>API: validate: classification ∈ {preview,supported,deprecated}<br/>(only when version changes)<br/>+ compatibility.validations[] CEL — old-vs-new,<br/>reject only a newly introduced violation
   API-->>Owner: accepted / rejected
 
   loop every reconcile
@@ -660,7 +660,7 @@ seed `Extension.spec.components[]`, and never the profile at all.
      cluster owner may pin a `preview` Kubernetes version today); it is excluded
      only from defaulting and from the auto-upgrade target search, never from an
      explicit pin. `unavailable` and `expired` are rejected.
-   * These existence, classification and compatibility checks run **only when the
+   * The existence and classification checks run **only when the
      `components[].version` changes** on the request (create, or an update that
      touches the pin). A shoot whose pinned version has since become `expired` or
      been removed from the profile is therefore not blocked from unrelated updates
@@ -671,6 +671,20 @@ seed `Extension.spec.components[]`, and never the profile at all.
      to the `Shoot` being admitted. (The variable is named `shoot` rather than the
      usual `self` because the rule lives on the `ExtensionProfile` but is evaluated
      against the `Shoot`, so `self` would be misleading.)
+   * **Compatibility is validated old-vs-new, not only on a pin change.** Because
+     the rules read arbitrary `Shoot` fields (e.g. `shoot.spec.kubernetes.version`,
+     a worker's machine image), an incompatibility can be introduced by a change
+     *elsewhere* in the shoot while the pin stays fixed — for example a Kubernetes
+     upgrade past a rule's floor. Gating the CEL checks on a pin change (as the
+     existence/classification checks are) would let such a change slip through. So
+     admission evaluates the rules against **both the old and the new shoot** and
+     rejects only a violation the update *introduces*: if the old shoot already
+     failed the same rule, the update is accepted (unrelated changes are never
+     blocked, and the shoot is dragged back into compatibility by the force-upgrade
+     / auto-upgrade paths rather than by a hard admission wall). This mirrors how
+     Gardener already validates Kubernetes-version constraints — relaxing the check
+     when the value is unchanged — generalised from "the pinned value" to "any
+     field a rule reads."
    * A partial `version` is resolved to the highest matching supported version
      and persisted.
    * **Protecting in-use versions** (mirroring `CloudProfile`): admission on the
