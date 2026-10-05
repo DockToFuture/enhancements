@@ -12,10 +12,11 @@ concern and is not visible to shoot owners.
 
 The landscape operator lists the offered component versions — with a
 `preview → supported → deprecated → expired` lifecycle — in a dedicated
-**`ExtensionProfile`** resource, one per participating extension type,
-side-by-side with (not inlined into) the `Extension` resource that registers
-the extension. This keeps the version list on its own `CloudProfile`-style
-object rather than overloading the extension-registration surface. Cluster
+**`ExtensionProfile`** resource, one per participating extension type. The
+profile is a standalone `core.gardener.cloud` object in the garden cluster
+(not inlined into the extension registration), which keeps the version list on
+its own `CloudProfile`-style object rather than overloading the
+extension-registration surface. Cluster
 owners **pin** a component version through the shoot's `spec.extensions[]`
 surface and may **opt in to auto-upgrade** within a patch, minor, or major
 boundary — the same UX they already know from `spec.kubernetes.version`.
@@ -179,10 +180,25 @@ existing under `ControlPlane`, `Infrastructure` and `Worker`) cannot arise.
 ### The `ExtensionProfile` resource
 
 The **landscape operator** maintains one **`ExtensionProfile`** resource per
-participating extension type, deployed side-by-side with the `Extension`
-resource that registers the extension in the garden cluster. Keeping the
-version list on its own object, rather than inlining it into the extension
-registration:
+participating extension type. The `ExtensionProfile` is a
+`core.gardener.cloud` resource and therefore lives in the **garden cluster**,
+next to the `ControllerRegistration` / `ControllerDeployment` that register the
+extension there — not in the runtime cluster where the operator's own
+`Extension` resource (`operator.gardener.cloud`) resides. "One per extension
+type" is a logical pairing, not same-cluster co-location.
+
+How the profile gets into the garden cluster is left open to two options, to be
+settled in implementation:
+
+* the operator applies the `ExtensionProfile` to the garden cluster directly, or
+* `gardener-operator` generates it from the runtime-cluster `Extension`
+  resource, exactly as it already derives the `ControllerRegistration` /
+  `ControllerDeployment` from that same `Extension` — so the operator declares
+  the offered versions once, runtime-side, and the garden-cluster
+  `ExtensionProfile` is a reconciled artifact.
+
+Keeping the version list on its own object, rather than inlining it into the
+extension registration:
 
 * mirrors `CloudProfile` — the operator reasons about the `ExtensionProfile`
   with the same mental model and (potentially) the same tooling;
