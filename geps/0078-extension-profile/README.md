@@ -723,6 +723,31 @@ seed `Extension.spec.components[]`, and never the profile at all.
      maintenance logic, and the applied change is recorded in
      `Shoot.status.lastMaintenance` just like those upgrades.
    * On `expired`, apply the force-upgrade path (below).
+   * **Order of evaluation within a maintenance window.** The maintenance
+     controller already maintains a single working copy of the `Shoot` and applies
+     its upgrades to that copy in a fixed order — **machine images (OS) first, then
+     the Kubernetes version** (see `maintainMachineImages` → `maintainKubernetesVersion`
+     in the shoot maintenance reconciler). This GEP appends extension component
+     versions as a **third step**, evaluated **last, against the working copy as
+     already mutated** by the OS and Kubernetes upgrades. A component auto-upgrade
+     candidate is therefore accepted only if its `compatibility.validations[]` CEL
+     holds against the shoot's *post-upgrade* OS/Kubernetes state, not its entering
+     state. This ordering is sound because the dependency is one-directional: a
+     component rule may read `shoot.spec.provider.workers[].machine.image` or
+     `shoot.spec.kubernetes.version`, but neither the machine-image nor the
+     Kubernetes maintenance logic reads `spec.extensions[].components[].version`.
+     Components are the only consumer dimension, so evaluating them last means
+     every field a component rule reads already holds its final value for the
+     window. The hazardous case — a component auto-upgrading to a version whose
+     rule requires the *old* OS while the OS also upgrades in the same window —
+     resolves correctly: by the time that component is evaluated the working copy
+     already carries the new OS, the rule fails, and the incompatible target is dropped
+     rather than written. (A component rule MUST NOT read another component's
+     version, which keeps this a linear sequence rather than a dependency graph.)
+     On `expired`, force-upgrade still fires against the post-OS/Kubernetes copy; if
+     no compatible target remains, the component holds its last compatible version
+     and surfaces a `Shoot` event rather than being forced into an incompatible
+     state.
    * `gardener-controller-manager` writes only the typed
      `spec.extensions[].components[].version` field on the shoot (in the garden
      cluster — the only cluster it can write to). It does **not** write any
