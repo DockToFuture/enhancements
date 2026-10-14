@@ -19,7 +19,8 @@ its own `CloudProfile`-style object rather than overloading the
 extension-registration surface. Cluster
 owners **pin** a component version through the shoot's `spec.extensions[]`
 surface and may **opt in to auto-upgrade** within a patch, minor, or major
-boundary — the same UX they already know from `spec.kubernetes.version`.
+boundary — a UX similar to the one they already know from
+`spec.kubernetes.version`.
 
 `gardener-controller-manager` classifies the profile and drives auto-upgrade and
 force-upgrade by **resolving the effective version onto the `Shoot` spec** in the
@@ -95,8 +96,10 @@ vocabulary and classification semantics this GEP builds on are those
 *implemented today* in `CloudProfile` for Kubernetes and machine-image
 versions. [GEP-32] formalises the classification lifecycle; [GEP-5]
 defines the versioning policy, including the force-upgrade behaviour on expiry.
-Where the two diverge from the existing implementation, the existing
-implementation is the reference for this GEP.
+Where a [GEP-32]/[GEP-5] specification and the behaviour currently implemented in
+`CloudProfile`/Gardener disagree, this GEP follows the implemented behaviour, so
+that extension-component versioning behaves exactly like the Kubernetes and
+machine-image versioning operators already know.
 
 ### Goals
 
@@ -336,7 +339,14 @@ Each version entry MAY carry an **optional `providerConfig`** — a
 (`version`, `lifecycle`, `compatibility`, `classification`)
 stay homogeneous for everyone; `providerConfig` is the escape hatch for
 extension-specific metadata a version needs. `gardener-apiserver` treats it
-opaquely. It is **not** written into the `Shoot` spec: when a version is
+opaquely — it validates the homogeneous core fields of every `ExtensionProfile`
+but cannot decode an extension-owned `providerConfig` shape. An extension that
+puts structured data in `providerConfig` therefore **MAY register its own
+validating admission webhook** for the `ExtensionProfile` resource (the standard
+Gardener pattern for extension-owned `RawExtension` payloads) to validate that
+shape at admission time; without one, a malformed `providerConfig` is caught by
+the extension controller at reconcile time instead. It is **not** written into
+the `Shoot` spec: when a version is
 resolved, `gardenlet` looks up the matched profile version entry and carries its
 `providerConfig` into the seed `Extension.spec.components[].providerConfig`
 field (see [Deployment](#design-details)), where the extension controller
