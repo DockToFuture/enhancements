@@ -633,13 +633,14 @@ sequenceDiagram
   end
 
   loop maintenance window
-    GCM->>GCM: find highest permitted & compatible version<br/>within the update boundary
-    alt newer version available AND autoUpdate.enabled
-      GCM->>API: patch Shoot.spec.extensions[].components[].version
+    GCM->>GCM: on one working copy: OS, then Kubernetes,<br/>then components — find highest permitted version,<br/>evaluating compatibility CEL against the mutated copy
+    alt newer compatible version available AND autoUpdate.enabled
+      GCM->>GCM: set spec.extensions[].components[].version on the copy
     end
     alt current version expired (even if autoUpdate.enabled=false)
-      GCM->>API: force-upgrade to highest supported, compatible patch<br/>of current minor, else next minor (GEP-5)
+      GCM->>GCM: force-upgrade to highest supported, compatible patch<br/>of current minor, else next minor (GEP-5)
     end
+    GCM->>API: single Update of the working copy<br/>(dry-run first; on reject, fail the window — nothing written)
   end
 
   GL->>API: watch Shoot
@@ -717,8 +718,9 @@ seed `Extension.spec.components[]`, and never the profile at all.
      filtered to those classified `supported`/`deprecated` **and** whose
      `compatibility.validations[]` evaluate to true against the shoot, so the
      target is never a version incompatible with the shoot. If a suitable target
-     exists, patch the matching `spec.extensions[].components[].version` during
-     the next maintenance window and emit a `Shoot` event. This runs in the shoot
+     exists, set the matching `spec.extensions[].components[].version` on the
+     maintenance working copy during the next maintenance window and emit a `Shoot`
+     event. This runs in the shoot
      maintenance controller alongside the existing Kubernetes/machine-image
      maintenance logic, and the applied change is recorded in
      `Shoot.status.lastMaintenance` just like those upgrades.
@@ -748,6 +750,26 @@ seed `Extension.spec.components[]`, and never the profile at all.
      no compatible target remains, the component holds its last compatible version
      and surfaces a `Shoot` event rather than being forced into an incompatible
      state.
+
+     The ordering is purely the internal order of computation on this single
+     working copy: the OS, Kubernetes and component steps mutate one in-memory
+     `Shoot`, and the controller then issues a **single** `Update` carrying all of
+     them together (the shoot maintenance reconciler builds one `maintainedShoot`
+     copy and writes it once) — not one API request per dimension.
+   * **The controller-manager evaluates the compatibility CEL itself; it does not
+     pick the highest version and rely on admission to reject a bad one.** The
+     candidate search above filters targets through the *same* CEL engine and the
+     same `shoot`-bound environment that admission uses, evaluated against the
+     already-OS/Kubernetes-mutated working copy, so a version whose
+     `compatibility.validations[]` do not hold is never a selectable target in the
+     first place. This mirrors the existing Kubernetes/machine-image maintenance
+     logic, which reuses the shared version-selection helpers so its target is
+     admission-valid by construction rather than a guess. As a backstop — not as
+     the primary mechanism — the maintenance controller already performs a
+     **dry-run `Update`** before the real write (precisely because a maintenance
+     result might still be rejected by `gardener-apiserver`); if the dry run fails,
+     the window is recorded as failed in `Shoot.status.lastMaintenance` and retried
+     next window, so a rejected spec is never persisted.
    * `gardener-controller-manager` writes only the typed
      `spec.extensions[].components[].version` field on the shoot (in the garden
      cluster — the only cluster it can write to). It does **not** write any
